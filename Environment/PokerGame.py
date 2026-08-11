@@ -1,4 +1,5 @@
 from enum import Enum
+from itertools import combinations
 import random
 
 from Environment.DeckOfCards import DeckOfCards
@@ -71,13 +72,12 @@ class PokerGame:
         self.post_blinds()
 
     def _player_places_amount(self, player: Player, amount: float):
-        if player.get_chips() < amount:
-            raise ValueError(f"Player {player.get_name()} does not have enough chips to bet {amount}")
-        else:
-            amount = player.place_bet(amount)
-            self.current_bets[player.get_name()] += amount
-            self.pot += amount
-            return amount
+        if amount < 0:
+            raise ValueError("Bet amount cannot be negative")
+        amount = player.place_bet(amount)
+        self.current_bets[player.get_name()] += amount
+        self.pot += amount
+        return amount
 
     def post_blinds(self):
         """
@@ -252,22 +252,22 @@ class PokerGame:
 
     def showdown(self):
         """
-        Compare the final 7-card hands. Award the pot to the winner(s).
-        For simplicity, only one winner is chosen. No side pots, no ties.
+        Compare each player's best five-card hand and split ties.
+
+        Side pots are intentionally not handled by this legacy engine yet.
         """
         active_players = [p for p in self.players if not p._folded]
 
         # Evaluate each player's best 5-card combination out of the 7
         best_ranks = {}
         for player in active_players:
-            # In a real game, you'd pick the best 5 of the 7.
-            # We'll do a naive approach: last 3 community cards + hole cards
-            # purely to demonstrate using the HandEvaluator’s get_hand_ranking(5-card).
             if len(self.community_cards) < 5:
-                # If the community has fewer than 5 cards in this naive approach, skip
                 continue
-            dummy_5_cards = self.community_cards[-3:] + list(player.get_cards())
-            rank = self.evaluator.get_hand_ranking(dummy_5_cards)
+            seven_cards = self.community_cards + list(player.get_cards())
+            rank = min(
+                self.evaluator.get_hand_ranking(list(five_cards))
+                for five_cards in combinations(seven_cards, 5)
+            )
             best_ranks[player.get_name()] = rank
 
         if not best_ranks:
@@ -275,14 +275,14 @@ class PokerGame:
             return
 
         # Suppose lower rank is better
-        winner = min(best_ranks, key=best_ranks.get)
-
-        # Award entire pot to winner
+        winning_rank = min(best_ranks.values())
+        winners = [name for name, rank in best_ranks.items() if rank == winning_rank]
+        share = self.pot / len(winners)
         for player in self.players:
-            if player.get_name() == winner:
-                player._chips += self.pot
+            if player.get_name() in winners:
+                player._chips += share
 
-        print(f"The winner is {winner} with rank {best_ranks[winner]}!")
+        print(f"Winner(s): {', '.join(winners)} with rank {winning_rank}!")
         self.pot = 0
 
     def play_hand(self):
@@ -353,8 +353,8 @@ class PokerGame:
         for p in self.players:
             status["players"].append({
                 "name": p.get_name(),
-                "chips": p.chips,
-                "folded": p.folded
+                "chips": p.get_chips(),
+                "folded": p._folded
             })
         return status
 
@@ -382,8 +382,7 @@ if __name__ == "__main__":
         Player("Bob", None, None, always_call_decider, start_money=1000),
     ]
 
-    # Create a deck (1 standard deck of 52 cards)
-    deck = DeckOfCards(1)
+
     # Create a hand evaluator
     evaluator = HandEvaluator(f_path="../data/hand_rankings.csv")
     # Create the poker game

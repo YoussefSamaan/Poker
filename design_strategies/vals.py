@@ -1,3 +1,5 @@
+import random
+
 #############################
 # ActionDecider Examples
 #############################
@@ -23,7 +25,7 @@ def always_call_decider(game_state):
     """
     Always calls if there's a bet, else checks.
     """
-    if game_state['current_bet'] > 0:
+    if game_state['to_call'] > 0:
         return "call"
     else:
         return "check"
@@ -32,9 +34,9 @@ def tight_decider(game_state):
     """
     Folds if there's a significant bet, otherwise calls or checks.
     """
-    if game_state['current_bet'] > 50:
+    if game_state['to_call'] > 50:
         return "fold"
-    if game_state['current_bet'] > 0:
+    if game_state['to_call'] > 0:
         return "call"
     else:
         return "check"

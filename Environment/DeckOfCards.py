@@ -22,7 +22,7 @@ class DeckOfCards:
     def _get_a_deck_of_cards(self):
         cards = []
         for suit in "HSCD":#Suits:
-            for value in "23456789TQKA": #Values:
+            for value in "23456789TJQKA": #Values:
                 cards.append(Card(suit, value))
         return cards
 
