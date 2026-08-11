@@ -16,6 +16,11 @@ live poker client and should not be used for real-time assistance.
 - Decision-point EV for fold, check/call, and parameterized raises.
 - Explicit fold-equity and fixed-range assumptions—heuristics are never labeled
   as GTO.
+- An authoritative 2–6 player No-Limit Hold'em state machine with one-action-at-
+  a-time control, legal-action discovery, real action order, full/short raises,
+  all-ins, side pots, deterministic odd chips, and structured hand histories.
+- Strict separation between privileged engine state and leak-free player
+  observations, plus deterministic seeds and exact scenario replay.
 - Vanilla CFR implemented from scratch for Kuhn poker, checked against the
   known game value, and evaluated by exhaustive imperfect-information best
   responses (NashConv).
@@ -47,6 +52,35 @@ python3 -m poker_ai train-kuhn --iterations 100000 --seed 7
 
 Card input accepts ordinary notation (`As`, `Qd`, `Th`) and Unicode suits
 (`A♠`, `Q♦`, `T♥`).
+
+## No-Limit Hold'em engine
+
+The new engine never asks a player object to act and never silently repairs an
+illegal action. A caller controls every transition:
+
+```python
+from poker_ai.holdem import Call, CheckCallPolicy, HoldemGame, TableConfig
+
+game = HoldemGame(
+    TableConfig(("Alice", "Bob", "Carol"), (200, 200, 200), 1, 2, button=0),
+    seed=42,
+)
+policy = CheckCallPolicy()
+game.start_hand()
+
+while not game.is_terminal:
+    player_id = game.current_player
+    observation = game.observation_for(player_id)
+    action = policy.decide(observation, observation.legal_actions)
+    transition = game.step(action)
+
+print(game.result)
+```
+
+`BetTo(12)` and `RaiseTo(12)` always mean a total street contribution of 12,
+not 12 additional chips. All chip accounting uses integers. See
+[`docs/HOLDEM_ENGINE.md`](docs/HOLDEM_ENGINE.md) for rule semantics, observations,
+side pots, replay, and the short-all-in reopening model.
 
 ## Interpreting scenario EV
 
@@ -100,26 +134,28 @@ poker_ai/
   equity.py      exact enumeration and Monte Carlo estimation
   scenario.py    auditable decision-point EV models
   cfr/kuhn.py    vanilla CFR learning baseline
+  holdem/         authoritative no-limit state machine and replay tools
 tests/            mathematical and regression checks
 ```
 
 The recommended sequence is deliberately incremental:
 
-1. **Foundation (current milestone):** prove card, evaluator, equity, EV, and
-   reproducibility correctness; use Kuhn to validate CFR math.
-2. **Leduc solver:** introduce a general extensive-form game interface, CFR+,
-   linear CFR, best response, NashConv/exploitability, and convergence plots.
-3. **Hold'em simulator:** legal no-limit actions, blinds/button order, all-ins,
-   side pots, public observations versus privileged engine state, complete hand
-   histories, duplicate dealing, and deterministic replay.
-4. **Offline coach baseline:** range notation (`QQ+`, `AKs`, percentages),
-   Bayesian action updates, multi-street rollouts, action-size abstraction, and
-   calibrated uncertainty. Compare every learned range model to simple priors.
-5. **Advanced solving:** MCCFR on abstractions, depth-limited subgame solving,
-   then neural value/advantage approximation only after tabular baselines and
-   profiling show the need.
-6. **Population evaluation:** duplicate matches, cross-play matrices, bb/100
-   intervals, exploitability where tractable, bootstrap analysis, and ablations.
+1. **Mathematical/research primitives — done:** cards, evaluator, equity, simple
+   EV, weighted ranges, and Kuhn CFR.
+2. **No-Limit Hold'em engine — done:** step API, complete betting rules, all-ins,
+   side pots, observations, invariants, histories, and deterministic replay.
+3. **Interactive scenario/trainer UI:** offline state entry, action stepping, and
+   visual hand review.
+4. **Offline coach baseline:** range notation (`QQ+`, `AKs`, percentages), pot
+   odds, equity, EV, explanations, and calibrated uncertainty.
+5. **Parameterized opponent personalities and simulation.**
+6. **Bayesian and learned opponent modeling**, always compared with simple
+   population and logistic baselines.
+7. **General CFR interface, Leduc, CFR+, and MCCFR.**
+8. **Hold'em abstraction and depth-limited subgame solving.**
+9. **Neural methods only where profiling and tabular baselines justify them.**
+10. **Rigorous population/statistical evaluation:** duplicate matches, cross-play
+    matrices, bb/100 intervals, bootstrap analysis, and ablations.
 
 Do not jump directly to PPO, a Transformer, or an LLM policy. Standard policy
 gradient methods do not by themselves address hidden information, and a strong
@@ -148,9 +184,11 @@ approximation, and rigorous evaluation. Raw hand equity alone is not a strategy.
 - Monte Carlo intervals quantify sampling noise, not range/model uncertainty.
 - Exact enumeration is intentionally simple and is not optimized for preflop
   exhaustive analysis.
-- The legacy simulator still lacks side pots and a complete legal-action state
-  machine; it should not yet be used for training.
+- `Environment/PokerGame.py` remains a legacy prototype. New training and UI
+  code must use `poker_ai.holdem.HoldemGame`.
 - Kuhn CFR is a mathematical baseline, not a Hold'em policy.
+- The Hold'em engine currently models cash-style blinds without antes, rake,
+  straddles, burn cards, or tournament-specific dead-button rules.
 
 These limitations are kept visible so later experiments can measure real
 improvement instead of silently changing assumptions.

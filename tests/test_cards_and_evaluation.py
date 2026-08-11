@@ -24,6 +24,22 @@ class CardTests(unittest.TestCase):
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_every_hand_category(self):
+        examples = {
+            "high card": "As Jd 9c 6h 3s",
+            "one pair": "As Ad 9c 6h 3s",
+            "two pair": "As Ad 9c 9h 3s",
+            "three of a kind": "As Ad Ac 6h 3s",
+            "straight": "2c 3d 4h 5s 6c",
+            "flush": "2h 5h 8h Jh Kh",
+            "full house": "Qc Qd Qh 2s 2c",
+            "four of a kind": "Qc Qd Qh Qs 2c",
+            "straight flush": "9s Ts Js Qs Ks",
+        }
+        for expected, cards in examples.items():
+            with self.subTest(expected):
+                self.assertEqual(evaluate_five(cards).name, expected)
+
     def test_category_order(self):
         straight = evaluate_five("2c 3d 4h 5s 6c")
         flush = evaluate_five("2h 5h 8h Jh Kh")
@@ -40,6 +56,32 @@ class EvaluationTests(unittest.TestCase):
     def test_best_five_of_seven(self):
         result = evaluate_holdem("As Ah Ad Kc Kd 2s 3c")
         self.assertEqual(result.name, "full house")
+        self.assertEqual(result.kickers, (14, 13))
+
+    def test_board_plays_and_exact_tie(self):
+        first = evaluate_holdem("2c 3d As Ks Qs Js Ts")
+        second = evaluate_holdem("4c 5d As Ks Qs Js Ts")
+        self.assertEqual(first, second)
+        self.assertEqual(first.name, "straight flush")
+
+    def test_one_hole_card_plays(self):
+        result = evaluate_holdem("As 2d Ah Kc Qd Js 3c")
+        self.assertEqual(result.name, "one pair")
+        self.assertEqual(result.kickers, (14, 13, 12, 11))
+
+    def test_both_hole_cards_play(self):
+        result = evaluate_holdem("As Ad 2c 3d 7h 9s Jc")
+        self.assertEqual(result.name, "one pair")
+        self.assertEqual(result.kickers, (14, 11, 9, 7))
+
+    def test_kicker_comparison(self):
+        ace_kicker = evaluate_holdem("As Qd Qc 8h 7s 4c 2d")
+        king_kicker = evaluate_holdem("Ks Jd Qc 8h 7s 4c 2d")
+        self.assertGreater(ace_kicker, king_kicker)
+
+    def test_quads_selected_over_full_house_from_seven(self):
+        result = evaluate_holdem("As Ah Ad Ac Kd Ks 2c")
+        self.assertEqual(result.name, "four of a kind")
         self.assertEqual(result.kickers, (14, 13))
 
 
