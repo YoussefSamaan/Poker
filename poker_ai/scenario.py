@@ -122,9 +122,15 @@ class ScenarioAnalyzer:
             if cost > scenario.hero_stack:
                 raise ValueError("raise cost cannot exceed the hero stack")
             if cost > scenario.to_call + scenario.villain_stack:
-                raise ValueError("raise cost cannot exceed the effective heads-up amount")
+                raise ValueError(
+                    "raise cost cannot exceed the effective heads-up amount"
+                )
             opponent_call = min(cost - scenario.to_call, scenario.villain_stack)
-            fe = fold_equity.get(cost, 0.0) if isinstance(fold_equity, Mapping) else fold_equity
+            fe = (
+                fold_equity.get(cost, 0.0)
+                if isinstance(fold_equity, Mapping)
+                else fold_equity
+            )
             if not 0 <= fe <= 1:
                 raise ValueError("fold equity must be between zero and one")
             final_pot = scenario.pot + cost + opponent_call

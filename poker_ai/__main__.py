@@ -12,7 +12,9 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Offline poker research tools")
     commands = parser.add_subparsers(dest="command", required=True)
 
-    analyze = commands.add_parser("analyze", help="analyze a heads-up hypothetical scenario")
+    analyze = commands.add_parser(
+        "analyze", help="analyze a heads-up hypothetical scenario"
+    )
     analyze.add_argument("--hero", nargs=2, required=True, metavar=("CARD1", "CARD2"))
     analyze.add_argument("--board", nargs="*", default=[])
     analyze.add_argument("--pot", type=float, required=True)
@@ -25,7 +27,9 @@ def _parser() -> argparse.ArgumentParser:
     analyze.add_argument("--seed", type=int, default=0)
     analyze.add_argument("--exact", action="store_true")
 
-    kuhn = commands.add_parser("train-kuhn", help="train the from-scratch Kuhn CFR baseline")
+    kuhn = commands.add_parser(
+        "train-kuhn", help="train the from-scratch Kuhn CFR baseline"
+    )
     kuhn.add_argument("--iterations", type=int, default=100_000)
     kuhn.add_argument("--seed", type=int, default=0)
     return parser

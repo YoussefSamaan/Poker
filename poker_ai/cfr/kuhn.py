@@ -17,7 +17,11 @@ class InformationSet:
     def strategy(self, reach_probability: float) -> tuple[float, float]:
         positive = [max(regret, 0.0) for regret in self.regret_sum]
         normalizer = sum(positive)
-        current = tuple(value / normalizer for value in positive) if normalizer else (0.5, 0.5)
+        current = (
+            tuple(value / normalizer for value in positive)
+            if normalizer
+            else (0.5, 0.5)
+        )
         for index, probability in enumerate(current):
             self.strategy_sum[index] += reach_probability * probability
         return current
@@ -39,7 +43,9 @@ class KuhnTrainingResult:
     seed: int
 
 
-def _terminal_utility(cards: tuple[str, str], history: str, player: int) -> float | None:
+def _terminal_utility(
+    cards: tuple[str, str], history: str, player: int
+) -> float | None:
     opponent = 1 - player
     higher = CARDS.index(cards[player]) > CARDS.index(cards[opponent])
     if history == "pp":
@@ -57,7 +63,9 @@ class KuhnCFR:
     def __init__(self) -> None:
         self.information_sets: dict[str, InformationSet] = {}
 
-    def _cfr(self, cards: tuple[str, str], history: str, reach_0: float, reach_1: float) -> float:
+    def _cfr(
+        self, cards: tuple[str, str], history: str, reach_0: float, reach_1: float
+    ) -> float:
         player = len(history) % 2
         terminal = _terminal_utility(cards, history, player)
         if terminal is not None:
@@ -72,13 +80,19 @@ class KuhnCFR:
         node_utility = 0.0
         for action_index, action in enumerate(ACTIONS):
             if player == 0:
-                child = self._cfr(cards, history + action, reach_0 * strategy[action_index], reach_1)
+                child = self._cfr(
+                    cards, history + action, reach_0 * strategy[action_index], reach_1
+                )
             else:
-                child = self._cfr(cards, history + action, reach_0, reach_1 * strategy[action_index])
+                child = self._cfr(
+                    cards, history + action, reach_0, reach_1 * strategy[action_index]
+                )
             action_utilities[action_index] = -child
             node_utility += strategy[action_index] * action_utilities[action_index]
         for action_index in range(2):
-            node.regret_sum[action_index] += opponent_reach * (action_utilities[action_index] - node_utility)
+            node.regret_sum[action_index] += opponent_reach * (
+                action_utilities[action_index] - node_utility
+            )
         return node_utility
 
     def train(self, iterations: int = 100_000, seed: int = 0) -> KuhnTrainingResult:
@@ -90,7 +104,10 @@ class KuhnCFR:
         for _ in range(iterations):
             rng.shuffle(deck)
             value += self._cfr((deck[0], deck[1]), "", 1.0, 1.0)
-        strategy = {key: node.average_strategy() for key, node in sorted(self.information_sets.items())}
+        strategy = {
+            key: node.average_strategy()
+            for key, node in sorted(self.information_sets.items())
+        }
         return KuhnTrainingResult(
             strategy,
             value / iterations,
@@ -125,7 +142,10 @@ def expected_value(
         player = len(history) % 2
         policy = player_zero_strategy if player == 0 else player_one_strategy
         probabilities = policy.get(cards[player] + history, (0.5, 0.5))
-        return sum(probabilities[index] * walk(cards, history + action) for index, action in enumerate(ACTIONS))
+        return sum(
+            probabilities[index] * walk(cards, history + action)
+            for index, action in enumerate(ACTIONS)
+        )
 
     deals = tuple(itertools.permutations(CARDS, 2))
     return sum(walk(deal, "") for deal in deals) / len(deals)
@@ -141,13 +161,19 @@ def _pure_strategies(player: int):
         }
 
 
-def best_response_value(strategy: Mapping[str, tuple[float, float]], player: int) -> float:
+def best_response_value(
+    strategy: Mapping[str, tuple[float, float]], player: int
+) -> float:
     """Return a player's exact best-response value without observing hidden cards."""
 
     if player == 0:
-        return max(expected_value(response, strategy) for response in _pure_strategies(0))
+        return max(
+            expected_value(response, strategy) for response in _pure_strategies(0)
+        )
     if player == 1:
-        return max(-expected_value(strategy, response) for response in _pure_strategies(1))
+        return max(
+            -expected_value(strategy, response) for response in _pure_strategies(1)
+        )
     raise ValueError("player must be 0 or 1")
 
 

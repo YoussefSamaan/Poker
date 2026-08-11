@@ -462,6 +462,16 @@ class HoldemGame:
             is_terminal=self.is_terminal,
         )
 
+    @property
+    def privileged_replay_deck(self) -> tuple[Card, ...]:
+        """Return the full deal order for deterministic offline replay.
+
+        This is privileged research state and must never be passed to a policy.
+        """
+
+        self._require_started_hand()
+        return tuple(self._deck)
+
     def assert_invariants(self) -> None:
         self._require_started_hand()
         committed = sum(player.total_contribution for player in self._players)

@@ -62,6 +62,18 @@ class ScenarioBuilder:
             )
         return game
 
+    @property
+    def known_hole_cards(self) -> dict[str, tuple[Card, Card]]:
+        return dict(self._hole_cards)
+
+    @property
+    def board_runout(self) -> tuple[Card, ...]:
+        return self._board_runout
+
+    @property
+    def scripted_actions(self) -> tuple[tuple[str, Action], ...]:
+        return tuple(self._actions)
+
     def _build_deck(self) -> tuple[Card, ...]:
         live_seats = [
             seat for seat, stack in enumerate(self.config.starting_stacks) if stack > 0

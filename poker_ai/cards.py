@@ -57,7 +57,9 @@ def parse_cards(cards: str | Iterable[str | Card]) -> tuple[Card, ...]:
         values: Iterable[str | Card] = cards.replace(",", " ").split()
     else:
         values = cards
-    parsed = tuple(card if isinstance(card, Card) else Card.parse(card) for card in values)
+    parsed = tuple(
+        card if isinstance(card, Card) else Card.parse(card) for card in values
+    )
     require_unique(parsed)
     return parsed
 
@@ -65,7 +67,9 @@ def parse_cards(cards: str | Iterable[str | Card]) -> tuple[Card, ...]:
 def require_unique(cards: Sequence[Card]) -> None:
     if len(set(cards)) != len(cards):
         duplicates = sorted(str(card) for card in cards if cards.count(card) > 1)
-        raise ValueError(f"duplicate cards are impossible: {', '.join(sorted(set(duplicates)))}")
+        raise ValueError(
+            f"duplicate cards are impossible: {', '.join(sorted(set(duplicates)))}"
+        )
 
 
 def full_deck() -> tuple[Card, ...]:

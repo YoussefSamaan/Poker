@@ -57,14 +57,18 @@ class EquityCalculator:
         cards_to_come = 5 - len(board_cards)
         possible_boards = math.comb(48 - len(board_cards), cards_to_come)
         outcome_count = len(ranges.combos) * possible_boards
-        use_exact = exact if exact is not None else outcome_count <= self.exact_threshold
+        use_exact = (
+            exact if exact is not None else outcome_count <= self.exact_threshold
+        )
 
         if use_exact:
             return self._enumerate(hero_cards, board_cards, ranges, seed)
         return self._monte_carlo(hero_cards, board_cards, ranges, samples, seed)
 
     @staticmethod
-    def _score(hero: tuple[Card, Card], opponent: tuple[Card, Card], board: tuple[Card, ...]) -> float:
+    def _score(
+        hero: tuple[Card, Card], opponent: tuple[Card, Card], board: tuple[Card, ...]
+    ) -> float:
         hero_rank = evaluate_holdem(hero + board)
         opponent_rank = evaluate_holdem(opponent + board)
         if hero_rank > opponent_rank:
@@ -85,7 +89,11 @@ class EquityCalculator:
         known = set(hero + board)
         needed = 5 - len(board)
         for combo in ranges.combos:
-            remaining = [card for card in full_deck() if card not in known and card not in combo.cards]
+            remaining = [
+                card
+                for card in full_deck()
+                if card not in known and card not in combo.cards
+            ]
             for runout in combinations(remaining, needed):
                 score = self._score(hero, combo.cards, board + runout)
                 outcomes += 1
@@ -96,7 +104,9 @@ class EquityCalculator:
                     ties += combo.weight
                 else:
                     losses += combo.weight
-        return self._result(wins, ties, losses, total_weight, outcomes, "exact", seed, ())
+        return self._result(
+            wins, ties, losses, total_weight, outcomes, "exact", seed, ()
+        )
 
     def _monte_carlo(
         self,
@@ -115,7 +125,11 @@ class EquityCalculator:
         scores: list[float] = []
         for _ in range(samples):
             combo = rng.choices(combos, weights=weights, k=1)[0]
-            remaining = [card for card in full_deck() if card not in known and card not in combo.cards]
+            remaining = [
+                card
+                for card in full_deck()
+                if card not in known and card not in combo.cards
+            ]
             runout = tuple(rng.sample(remaining, needed))
             score = self._score(hero, combo.cards, board + runout)
             scores.append(score)
@@ -125,7 +139,9 @@ class EquityCalculator:
                 ties += 1
             else:
                 losses += 1
-        return self._result(wins, ties, losses, float(samples), samples, "monte_carlo", seed, scores)
+        return self._result(
+            wins, ties, losses, float(samples), samples, "monte_carlo", seed, scores
+        )
 
     @staticmethod
     def _result(
@@ -142,9 +158,14 @@ class EquityCalculator:
         equity = win_p + tie_p / 2
         score_values = tuple(scores)
         if len(score_values) > 1:
-            variance = sum((score - equity) ** 2 for score in score_values) / (len(score_values) - 1)
+            variance = sum((score - equity) ** 2 for score in score_values) / (
+                len(score_values) - 1
+            )
             standard_error = math.sqrt(variance / len(score_values))
-            interval = (max(0.0, equity - 1.96 * standard_error), min(1.0, equity + 1.96 * standard_error))
+            interval = (
+                max(0.0, equity - 1.96 * standard_error),
+                min(1.0, equity + 1.96 * standard_error),
+            )
         else:
             standard_error = 0.0
             interval = (equity, equity)

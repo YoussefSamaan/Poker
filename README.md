@@ -21,6 +21,8 @@ live poker client and should not be used for real-time assistance.
   all-ins, side pots, deterministic odd chips, and structured hand histories.
 - Strict separation between privileged engine state and leak-free player
   observations, plus deterministic seeds and exact scenario replay.
+- A replayable training-session layer with undo, timeline navigation, independent
+  branches, manual/policy seats, JSON persistence, and a local Streamlit trainer.
 - Vanilla CFR implemented from scratch for Kuhn poker, checked against the
   known game value, and evaluated by exhaustive imperfect-information best
   responses (NashConv).
@@ -52,6 +54,35 @@ python3 -m poker_ai train-kuhn --iterations 100000 --seed 7
 
 Card input accepts ordinary notation (`As`, `Qd`, `Th`) and Unicode suits
 (`A♠`, `Q♦`, `T♥`).
+
+## Running the trainer
+
+Install the optional local UI dependency and launch Streamlit:
+
+```bash
+python3 -m pip install -e '.[trainer]'
+streamlit run poker_ai/trainer_app.py
+```
+
+The trainer starts with the documented three-player `As Qs` / `Qd 8c 4s`
+decision. It can also create deterministic 2–6 player hands with one human seat
+and check/call or seeded-random policies. **Player View** hides opponents' cards;
+the clearly marked **Research View** reveals privileged cards for offline study.
+Policies always receive only their own `PlayerObservation`, regardless of that
+display toggle.
+
+Use **Next AI action** for one automated transition or **Auto-play until human**
+to stop at the next manual decision. Undo, redo, direct timeline navigation, and
+**Branch here** all reconstruct state by replaying the original deal and actions.
+The Scenario Builder accepts ordinary card notation and one legal action per line
+without requiring JSON. Engine validation rejects duplicate cards, impossible
+boards, illegal actions, and stack violations.
+
+Sessions can be exported and imported as versioned JSON. At heads-up decision
+points, the baseline panel reports equity against a random or explicit weighted
+concrete-card range, pot odds, and one-step EV for convenient legal bet/raise
+sizes. This is an assumption-bound reference calculation—not GTO, a Nash
+strategy, or a full poker solver. Multiway equity/EV is not yet implemented.
 
 ## No-Limit Hold'em engine
 
@@ -135,6 +166,8 @@ poker_ai/
   scenario.py    auditable decision-point EV models
   cfr/kuhn.py    vanilla CFR learning baseline
   holdem/         authoritative no-limit state machine and replay tools
+  training/       replayable sessions and decision-analysis adapter
+  trainer_app.py  thin local Streamlit UI
 tests/            mathematical and regression checks
 ```
 
@@ -144,8 +177,8 @@ The recommended sequence is deliberately incremental:
    EV, weighted ranges, and Kuhn CFR.
 2. **No-Limit Hold'em engine — done:** step API, complete betting rules, all-ins,
    side pots, observations, invariants, histories, and deterministic replay.
-3. **Interactive scenario/trainer UI:** offline state entry, action stepping, and
-   visual hand review.
+3. **Interactive scenario/trainer UI — done:** offline state entry, action
+   stepping, replay/branching, persistence, and transparent heads-up baselines.
 4. **Offline coach baseline:** range notation (`QQ+`, `AKs`, percentages), pot
    odds, equity, EV, explanations, and calibrated uncertainty.
 5. **Parameterized opponent personalities and simulation.**

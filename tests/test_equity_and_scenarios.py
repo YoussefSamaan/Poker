@@ -27,8 +27,12 @@ class EquityTests(unittest.TestCase):
 
     def test_seeded_monte_carlo_is_reproducible(self):
         calculator = EquityCalculator(exact_threshold=1)
-        first = calculator.calculate(("As", "Qh"), ("8c", "7d", "2s"), samples=400, seed=9)
-        second = calculator.calculate(("As", "Qh"), ("8c", "7d", "2s"), samples=400, seed=9)
+        first = calculator.calculate(
+            ("As", "Qh"), ("8c", "7d", "2s"), samples=400, seed=9
+        )
+        second = calculator.calculate(
+            ("As", "Qh"), ("8c", "7d", "2s"), samples=400, seed=9
+        )
         self.assertEqual(first, second)
         self.assertGreater(first.standard_error, 0)
 
