@@ -14,14 +14,18 @@ from poker_ai.holdem import (
     ScenarioBuilder,
     TableConfig,
 )
-from poker_ai.ranges import WeightedRange
+from poker_ai.ranges import RANGE_RANKS, PreflopRange, WeightedRange
 from poker_ai.training import (
-    HeadsUpAnalysisRequired,
     PolicyConfig,
     PolicyKind,
     TrainingSession,
     analyze_current_decision,
+    analyze_showdown_baseline,
+    board_features,
+    capture_decision_review,
     decision_context,
+    describe_current_hand,
+    player_table_view,
 )
 
 
@@ -115,24 +119,31 @@ def _card_text(cards: tuple[Any, ...]) -> str:
 
 def _render_table(st: Any, session: TrainingSession, research_view: bool) -> None:
     game = session.game
-    state = game.internal_state
-    observation = game.observation_for(
-        game.current_player or session.config.player_ids[0]
+    hero_id = next(
+        player_id
+        for player_id in session.config.player_ids
+        if session.controls[player_id].value == "human"
     )
+    observation = game.observation_for(hero_id)
+    seats: tuple[tuple[Any, tuple[Any, ...] | None], ...]
+    if research_view:
+        # This is the only table-rendering path allowed to request privileged state.
+        privileged = game.internal_state
+        seats = tuple((player, player.hole_cards) for player in privileged.players)
+    else:
+        public = player_table_view(observation)
+        seats = tuple((player, player.cards) for player in public.seats)
     st.subheader(f"{observation.street.value.title()} · pot {observation.pot}")
     st.markdown(f"Board: **{_card_text(observation.board)}**")
-    columns = st.columns(len(state.players))
-    for column, player in zip(columns, state.players):
+    columns = st.columns(len(seats))
+    for column, (player, cards) in zip(columns, seats):
         with column:
-            marker = " (BTN)" if player.player_id == state.button_player else ""
+            marker = " (BTN)" if player.player_id == observation.button_player else ""
             st.markdown(f"**{player.player_id}{marker}**")
             st.write(f"Stack: {player.stack}")
             st.write(f"Status: {player.status.value}")
             st.write(f"Street chips: {player.street_contribution}")
-            visible = (
-                research_view or session.controls[player.player_id].value == "human"
-            )
-            st.write(f"Cards: {_card_text(player.hole_cards) if visible else '🂠 🂠'}")
+            st.write(f"Cards: {_card_text(cards) if cards else '🂠 🂠'}")
 
 
 def _render_controls(st: Any, session: TrainingSession) -> None:
@@ -219,49 +230,85 @@ def _render_analysis(st: Any, session: TrainingSession) -> None:
     actor = session.current_actor
     if actor is None or session.game.is_terminal:
         return
-    st.subheader("Decision baseline")
+    st.subheader("Poker Coach v1")
     context = decision_context(session.game, actor)
-    st.metric("Pot odds / required equity", f"{context.required_equity:.1%}")
-    range_text = st.text_area(
-        "Explicit weighted range (optional)",
-        placeholder="AhKh:1\n8s8d:0.5",
-        help="One concrete two-card combination and positive weight per line.",
+    features = board_features(context.board)
+    st.write(
+        f"**Hero hand:** {describe_current_hand(context.hero_cards, context.board)}"
     )
-    fold_equity = st.slider("Assumed fold frequency", 0.0, 1.0, 0.0, 0.05)
+    st.write(
+        f"**Board:** {features.suit_texture}; paired={features.paired}; "
+        f"highest={features.highest_rank or '—'}; max rank gap="
+        f"{features.maximum_adjacent_rank_gap if features.maximum_adjacent_rank_gap is not None else '—'}"
+    )
+    st.write(
+        f"**Pot odds:** call {context.to_call} into {context.pot}; "
+        f"required equity {context.required_equity:.1%}."
+    )
+    advanced = st.toggle("Advanced concrete-combo input")
+    range_inputs: dict[str, str] = {}
+    for opponent in context.opponent_ids:
+        range_inputs[opponent] = st.text_area(
+            f"{opponent} range",
+            "QQ+, AKs, AKo" if not advanced else "AhKh:1\nQcQd:0.5",
+            key=f"coach_range_{opponent}",
+        )
     samples = st.number_input("Monte Carlo samples", 100, 200_000, 10_000, 100)
+    fold_equity = (
+        st.slider("Heads-up assumed fold frequency", 0.0, 1.0, 0.0, 0.05)
+        if len(context.opponent_ids) == 1
+        else 0.0
+    )
     if st.button("Run baseline analysis"):
         try:
-            result = analyze_current_decision(
-                session.game,
-                actor,
-                opponent_range=parse_weighted_range(range_text),
-                fold_equity=fold_equity,
-                samples=samples,
-                seed=0,
+            dead = context.hero_cards + context.board
+            ranges = {}
+            parsed_preflop = {}
+            for opponent, text in range_inputs.items():
+                if advanced:
+                    ranges[opponent] = parse_weighted_range(text)
+                else:
+                    parsed = PreflopRange.parse(text)
+                    parsed_preflop[opponent] = parsed
+                    ranges[opponent] = parsed.to_weighted_range(dead)
+            result = analyze_showdown_baseline(
+                session.game, actor, ranges, samples=samples, seed=0
             )
-        except HeadsUpAnalysisRequired as error:
-            st.warning(str(error))
         except ValueError as error:
             st.error(str(error))
         else:
             st.warning(result.model_label)
+            for opponent, parsed in parsed_preflop.items():
+                stats = parsed.stats(dead)
+                st.write(
+                    f"**{opponent}:** {stats.raw_combo_count} expanded combos; "
+                    f"{stats.legal_combo_count} legal after blockers; "
+                    f"{stats.coverage:.1%} preflop coverage; total legal weight "
+                    f"{stats.total_weight:g}."
+                )
+            if parsed_preflop:
+                first = next(iter(parsed_preflop.values()))
+                matrix = first.matrix()
+                st.dataframe(
+                    [
+                        {
+                            "row": RANGE_RANKS[row],
+                            **{
+                                rank: matrix[row][column]
+                                for column, rank in enumerate(RANGE_RANKS)
+                            },
+                        }
+                        for row in range(13)
+                    ],
+                    hide_index=False,
+                    use_container_width=True,
+                )
             equity = result.equity
             interval = equity.confidence_interval_95
-            st.write(
-                f"Call {result.context.to_call} to contest "
-                f"{result.context.pot_after_call}: "
-                f"{result.context.to_call} / {result.context.pot_after_call} = "
-                f"{result.context.required_equity:.1%} required equity."
-            )
-            metrics = st.columns(4)
+            metrics = st.columns(3)
             metrics[0].metric("Win", f"{equity.win_probability:.1%}")
             metrics[1].metric("Tie", f"{equity.tie_probability:.1%}")
-            metrics[2].metric("Loss", f"{equity.loss_probability:.1%}")
-            metrics[3].metric(
-                "Equity",
-                f"{equity.equity:.1%}",
-                f"{result.equity_edge:+.1%} vs required",
-            )
+            metrics[2].metric("Expected pot share", f"{equity.equity:.1%}")
             st.caption(
                 f"{equity.method}; {equity.outcomes:,} outcomes; standard error "
                 f"{equity.standard_error:.3%}; 95% sampling interval "
@@ -269,40 +316,69 @@ def _render_analysis(st: Any, session: TrainingSession) -> None:
             )
             baseline_rows = [
                 {
-                    "candidate": value.action.replace("_", " / "),
-                    "target": None,
-                    "decision cost": (
-                        result.context.to_call if value.action == "call" else 0
-                    ),
-                    "EV": round(value.ev, 3),
-                    "regret vs best baseline": round(
-                        result.scenario_analysis.regret(value.action), 3
-                    ),
+                    "action": value.action,
+                    "EV": None if value.ev is None else round(value.ev, 3),
                     "assumptions": value.assumptions,
                 }
-                for value in result.scenario_analysis.actions
-                if not value.action.startswith("raise_cost_")
+                for value in result.actions
             ]
-            baseline_rows.extend(
-                [
-                    {
-                        "candidate": value.sizing.label,
-                        "target": value.sizing.target_to,
-                        "decision cost": value.sizing.decision_cost,
-                        "EV": round(value.ev, 3),
-                        "regret vs best baseline": round(value.regret, 3),
-                        "assumptions": value.assumptions,
-                    }
-                    for value in result.candidate_values
-                ]
-            )
-            st.dataframe(
-                baseline_rows,
-                hide_index=True,
-                use_container_width=True,
-            )
+            st.dataframe(baseline_rows, hide_index=True, use_container_width=True)
+            if len(context.opponent_ids) == 1:
+                aggressive = analyze_current_decision(
+                    session.game,
+                    actor,
+                    opponent_range=ranges[context.opponent_ids[0]],
+                    fold_equity=fold_equity,
+                    samples=samples,
+                    seed=0,
+                )
+                st.write("**Heads-up aggressive-action extension**")
+                st.dataframe(
+                    [
+                        {
+                            "size": value.sizing.label,
+                            "target to": value.sizing.target_to,
+                            "decision cost": value.sizing.decision_cost,
+                            "EV": round(value.ev, 3),
+                            "regret in model": round(value.regret, 3),
+                            "assumed fold frequency": fold_equity,
+                        }
+                        for value in aggressive.candidate_values
+                    ],
+                    hide_index=True,
+                    use_container_width=True,
+                )
             for line in result.explanation:
                 st.write(line)
+            review_choices: dict[str, Action] = {}
+            legal = context.legal_actions
+            if legal.can_fold:
+                review_choices["Fold"] = Fold()
+            if legal.can_check:
+                review_choices["Check"] = Check()
+            if legal.can_call:
+                review_choices["Call"] = Call()
+            if legal.can_bet and legal.min_bet_to is not None:
+                review_choices[f"Bet to {legal.min_bet_to}"] = BetTo(legal.min_bet_to)
+            if legal.can_raise and legal.min_raise_to is not None:
+                review_choices[f"Raise to {legal.min_raise_to}"] = RaiseTo(
+                    legal.min_raise_to
+                )
+            selected_review = st.selectbox(
+                "Action to record in DecisionReview", tuple(review_choices)
+            )
+            if st.button("Save analysis review"):
+                review = capture_decision_review(
+                    session.position,
+                    result,
+                    review_choices[selected_review],
+                    tuple(range_inputs.values()),
+                )
+                st.session_state.setdefault("decision_reviews", []).append(review)
+                st.success(
+                    f"Saved review: best baseline action {review.best_baseline_action}; "
+                    f"estimated baseline regret {review.estimated_baseline_regret}."
+                )
 
 
 def _render_scenario_builder(st: Any) -> None:

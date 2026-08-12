@@ -23,6 +23,9 @@ live poker client and should not be used for real-time assistance.
   observations, plus deterministic seeds and exact scenario replay.
 - A replayable training-session layer with undo, timeline navigation, independent
   branches, manual/policy seats, JSON persistence, and a local Streamlit trainer.
+- Poker Coach v1 range notation and 13×13 matrices, blocker-aware weighted
+  expansion, multiway equity with fractional tie shares, public-safe Player View,
+  objective board/hand descriptions, range sensitivity, and decision reviews.
 - Vanilla CFR implemented from scratch for Kuhn poker, checked against the
   known game value, and evaluated by exhaustive imperfect-information best
   responses (NashConv).
@@ -82,7 +85,14 @@ Sessions can be exported and imported as versioned JSON. At heads-up decision
 points, the baseline panel reports equity against a random or explicit weighted
 concrete-card range, pot odds, and one-step EV for convenient legal bet/raise
 sizes. This is an assumption-bound reference calculation—not GTO, a Nash
-strategy, or a full poker solver. Multiway equity/EV is not yet implemented.
+strategy, or a full poker solver. Aggressive-action EV remains heads-up only.
+
+Poker Coach v1 also accepts conventional ranges such as `QQ+, AKs, AKo` and
+independent ranges for every opponent. Multiway fold/check/call values use a
+simplified no-future-betting showdown model with side-pot eligibility. Multiway
+raise EV remains intentionally unsupported. See
+[`docs/POKER_COACH.md`](docs/POKER_COACH.md) for grammar, algorithms, privacy,
+uncertainty, assumptions, and benchmark results.
 
 ## No-Limit Hold'em engine
 
@@ -179,8 +189,8 @@ The recommended sequence is deliberately incremental:
    side pots, observations, invariants, histories, and deterministic replay.
 3. **Interactive scenario/trainer UI — done:** offline state entry, action
    stepping, replay/branching, persistence, and transparent heads-up baselines.
-4. **Offline coach baseline:** range notation (`QQ+`, `AKs`, percentages), pot
-   odds, equity, EV, explanations, and calibrated uncertainty.
+4. **Poker Coach v1 — done:** range notation (`QQ+`, `AKs`), multiway equity,
+   side-pot-aware passive baselines, explanations, and sampling uncertainty.
 5. **Parameterized opponent personalities and simulation.**
 6. **Bayesian and learned opponent modeling**, always compared with simple
    population and logistic baselines.
