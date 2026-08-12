@@ -29,6 +29,9 @@ live poker client and should not be used for real-time assistance.
 - Product-conditioned joint opponent sampling, shared showdown worlds for every
   side-pot layer, chip-denominated passive-EV uncertainty, and interactive
   quick/standard/custom precision controls.
+- Serializable synthetic personality profiles, explainable seeded agents, and an
+  independent-hand population simulation lab with behavior, position, bb/100,
+  uncertainty, duplicate deals, cross-play, sweeps, JSON/CSV, UI, and CLI access.
 - Vanilla CFR implemented from scratch for Kuhn poker, checked against the
   known game value, and evaluated by exhaustive imperfect-information best
   responses (NashConv).
@@ -97,6 +100,12 @@ physical cards and one runout remain fixed across every pot layer in a sampled
 world. Multiway raise EV remains intentionally unsupported. See
 [`docs/POKER_COACH.md`](docs/POKER_COACH.md) for grammar, algorithms, privacy,
 uncertainty, assumptions, and benchmark results.
+
+Synthetic agents and experiments are documented in
+[`docs/PERSONALITIES.md`](docs/PERSONALITIES.md) and
+[`docs/SIMULATION_LAB.md`](docs/SIMULATION_LAB.md). These fixed illustrative
+policies are not inferred opponent models and are not claims about real poker
+populations.
 
 ## No-Limit Hold'em engine
 
@@ -195,7 +204,8 @@ The recommended sequence is deliberately incremental:
    stepping, replay/branching, persistence, and transparent heads-up baselines.
 4. **Poker Coach v1 — done:** range notation (`QQ+`, `AKs`), multiway equity,
    side-pot-aware passive baselines, explanations, and sampling uncertainty.
-5. **Parameterized opponent personalities and simulation.**
+5. **Parameterized synthetic personalities and simulation — done:** traced
+   heuristic agents, independent-hand evaluation, cross-play, sweeps, and metrics.
 6. **Bayesian and learned opponent modeling**, always compared with simple
    population and logistic baselines.
 7. **General CFR interface, Leduc, CFR+, and MCCFR.**

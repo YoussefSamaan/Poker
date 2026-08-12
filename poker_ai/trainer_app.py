@@ -14,6 +14,8 @@ from poker_ai.holdem import (
     ScenarioBuilder,
     TableConfig,
 )
+from poker_ai.agents import PRESETS
+from poker_ai.experiments import SimulationConfig, SimulationRunner
 from poker_ai.ranges import PreflopRange, WeightedRange
 from poker_ai.training import (
     PolicyConfig,
@@ -38,18 +40,21 @@ def create_new_hand_session(
     hero_seat: int = 0,
     seed: int = 0,
     policy_kind: PolicyKind = PolicyKind.CHECK_CALL,
+    personality: str | None = None,
 ) -> TrainingSession:
     names = tuple(f"P{seat + 1}" for seat in range(player_count))
     config = TableConfig(names, (stack,) * player_count, 1, 2, button=0)
     hero = names[hero_seat]
+    selected_kind = PolicyKind(personality) if personality is not None else policy_kind
     policies = {
-        player_id: PolicyConfig(policy_kind, seed + seat + 1)
+        player_id: PolicyConfig(selected_kind, seed + seat + 1)
         for seat, player_id in enumerate(names)
         if player_id != hero
     }
-    return TrainingSession.new_hand(
+    session = TrainingSession.new_hand(
         config, seed=seed, human_players={hero}, policy_configs=policies
     )
+    return session
 
 
 def create_example_session() -> TrainingSession:
@@ -188,6 +193,23 @@ def _render_controls(st: Any, session: TrainingSession) -> None:
         if right.button("Auto-play until human"):
             session.auto_play_until_human()
             st.rerun()
+    if session.last_policy_trace is not None:
+        trace = session.last_policy_trace
+        with st.expander("Latest synthetic-agent DecisionTrace", expanded=True):
+            st.write(f"**{trace.profile} — {trace.features.player_id}**")
+            st.write(
+                f"{trace.features.position}; {trace.features.street.value}; "
+                f"hand {trace.features.hand_class}; bucket {trace.features.bucket.value}."
+            )
+            st.dataframe(
+                [
+                    {"action family": name, "probability": value}
+                    for name, value in trace.probabilities
+                ],
+                hide_index=True,
+            )
+            for line in trace.rationale:
+                st.write(line)
 
 
 def _render_timeline(st: Any, session: TrainingSession) -> None:
@@ -528,7 +550,9 @@ def main() -> None:
             "application/json",
         )
 
-    trainer, builder_tab = st.tabs(("Trainer", "Scenario builder"))
+    trainer, builder_tab, simulation_tab = st.tabs(
+        ("Trainer", "Scenario builder", "Simulation Lab")
+    )
     with trainer:
         session = st.session_state.training_session
         research_view = st.toggle(
@@ -544,6 +568,81 @@ def main() -> None:
         _render_analysis(st, session)
     with builder_tab:
         _render_scenario_builder(st)
+    with simulation_tab:
+        st.subheader("Synthetic Population Simulation Lab")
+        player_count = st.number_input("Simulation players", 2, 6, 2)
+        selected_profiles = []
+        keys = tuple(PRESETS)
+        for seat in range(player_count):
+            selected_profiles.append(
+                st.selectbox(
+                    f"Seat {seat + 1} profile",
+                    keys,
+                    index=seat % len(keys),
+                    key=f"simulation_profile_{seat}",
+                    format_func=lambda value: PRESETS[value].name,
+                )
+            )
+        budget = st.selectbox("Hands", (1_000, 10_000, "Custom"))
+        simulation_hands = (
+            st.number_input("Custom hands", 1, 1_000_000, 1_000)
+            if budget == "Custom"
+            else budget
+        )
+        simulation_stack = st.number_input("Starting stack (BB)", 10, 500, 100)
+        simulation_seed = st.number_input("Experiment seed", 0, 2**31 - 1, 42)
+        duplicate = st.toggle("Duplicate-deal mode")
+        if st.button("Run simulation"):
+            with st.spinner("Running independent offline hands..."):
+                result = SimulationRunner(
+                    SimulationConfig(
+                        tuple(PRESETS[key] for key in selected_profiles),
+                        hands=simulation_hands,
+                        stack_bb=simulation_stack,
+                        master_seed=simulation_seed,
+                        duplicate_deals=duplicate,
+                    )
+                ).run()
+            st.session_state.simulation_result = result
+        if "simulation_result" in st.session_state:
+            result = st.session_state.simulation_result
+            st.dataframe(
+                [
+                    {
+                        "Profile": metric.profile,
+                        "Hands": metric.hands,
+                        "Net BB": metric.total_net_bb,
+                        "bb/100": metric.bb_per_100,
+                        "95% CI": metric.confidence_interval_95_bb_per_100,
+                        "VPIP": metric.vpip,
+                        "PFR": metric.pfr,
+                        "3-bet": metric.three_bet_frequency,
+                        "Call": metric.call_frequency,
+                        "Fold": metric.fold_frequency,
+                        "Aggression": metric.postflop_aggression_frequency,
+                        "Showdown": metric.showdown_rate,
+                    }
+                    for metric in result.metrics
+                ],
+                hide_index=True,
+                use_container_width=True,
+            )
+            st.warning(
+                "Wide confidence intervals mean the experiment does not identify a winner."
+            )
+            st.line_chart(result.cumulative_net_bb(), x="hand")
+            st.download_button(
+                "Export experiment JSON",
+                result.to_json(),
+                "simulation.json",
+                "application/json",
+            )
+            st.download_button(
+                "Export metrics CSV",
+                result.metrics_csv(),
+                "simulation-metrics.csv",
+                "text/csv",
+            )
 
 
 if __name__ == "__main__":

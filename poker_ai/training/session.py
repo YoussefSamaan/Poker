@@ -35,6 +35,12 @@ class SeatControl(Enum):
 class PolicyKind(Enum):
     CHECK_CALL = "check_call"
     RANDOM_LEGAL = "random_legal"
+    NIT = "nit"
+    TAG = "tag"
+    LAG = "lag"
+    CALLING_STATION = "calling_station"
+    MANIAC = "maniac"
+    BLUFF_HEAVY = "bluff_heavy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +53,17 @@ class PolicyConfig:
             return CheckCallPolicy()
         if self.kind == PolicyKind.RANDOM_LEGAL:
             return RandomLegalPolicy(self.seed)
+        if self.kind.value in {
+            "nit",
+            "tag",
+            "lag",
+            "calling_station",
+            "maniac",
+            "bluff_heavy",
+        }:
+            from ..agents import PRESETS, PersonalityAgent
+
+            return PersonalityAgent(PRESETS[self.kind.value], self.seed)
         raise ValueError(f"unsupported policy kind {self.kind}")
 
 
@@ -125,6 +142,7 @@ class TrainingSession:
             raise ValueError("timeline position is outside the action history")
         self._custom_policy_templates: dict[str, Policy] = {}
         self._policies: dict[str, Policy] = {}
+        self.last_policy_trace: Any | None = None
         for player_id, policy_config in self.policy_configs.items():
             self._require_player(player_id)
             self.controls[player_id] = SeatControl.POLICY
@@ -314,6 +332,7 @@ class TrainingSession:
         observation = self.game.observation_for(actor)
         legal = self.game.legal_actions(actor)
         action = policy.decide(observation, legal)
+        self.last_policy_trace = copy.deepcopy(getattr(policy, "last_trace", None))
         transition = self.act(action)
         return PolicyStep(actor, action, transition)
 

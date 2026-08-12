@@ -17,8 +17,8 @@ class InformationSet:
     def strategy(self, reach_probability: float) -> tuple[float, float]:
         positive = [max(regret, 0.0) for regret in self.regret_sum]
         normalizer = sum(positive)
-        current = (
-            tuple(value / normalizer for value in positive)
+        current: tuple[float, float] = (
+            (positive[0] / normalizer, positive[1] / normalizer)
             if normalizer
             else (0.5, 0.5)
         )
