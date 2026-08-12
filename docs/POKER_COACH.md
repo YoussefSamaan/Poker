@@ -32,11 +32,14 @@ hands above it, and offsuit hands below it.
 
 ## Multiway equity
 
-`MultiwayEquityCalculator` supports one to five opponents. Monte Carlo samples
-each opponent sequentially from that seat's weighted range, conditioned on all
-Hero, board, and previously selected opponent cards. It then samples the runout
-from the remaining deck. Impossible overlapping deals therefore cannot enter a
-sample.
+`MultiwayEquityCalculator` supports one to five opponents. Small joint spaces
+enumerate every mutually compatible opponent-hand tuple and attach the product
+of its seat-specific weights. Large spaces independently propose one weighted
+hand per opponent and reject the entire tuple on any collision. Rejection
+sampling exactly conditions the independent product distribution on physical
+card compatibility, without the earlier seat-order bias. It then samples one
+runout from the remaining deck. Impossible overlapping deals cannot enter a
+world.
 
 Small estimated spaces of at most 10,000 weighted deal/runout outcomes use exact
 enumeration; larger spaces use seeded Monte Carlo. Hero's sample value is actual
@@ -47,12 +50,19 @@ only—not range correctness or opponent-model uncertainty.
 
 ## Simplified decision model
 
-Fold is zero at the decision point because prior chips are sunk. For check/call,
-all eligible hands run to showdown, ranges remain fixed, and nobody bets again.
-The analyzer reuses `build_side_pots`; each pot layer is valued only against the
-opponents eligible for that layer. Expected layer payouts are summed and the
-additional call cost is subtracted. Heads-up aggressive actions retain the older
+Fold is zero at the decision point because prior chips are sunk. The passive
+baseline is explicitly **check/call to showdown**: after Hero checks or calls,
+each remaining active player checks or calls the current wager up to its stack,
+nobody raises, fixed ranges remain unchanged, and the board runs out. The
+analyzer reuses `build_side_pots`. Every pot layer consumes the same complete
+`ShowdownWorld`, so an ineligible short stack's physical cards still block other
+hands and runout cards. Expected payouts are averaged and Hero's deterministic
+new contribution is subtracted. Heads-up aggressive actions retain the older
 explicit fold-frequency model. Multiway bet/raise EV is visibly unsupported.
+
+Monte Carlo passive-action output includes payout/EV standard error and a normal
+95% sampling interval. Exact output has zero simulation error. Neither interval
+measures uncertainty in the supplied ranges.
 
 Made-hand text reuses the existing evaluator. Board features are objective:
 paired/double-paired, rainbow/two-tone/monotone, highest rank, and maximum gap
@@ -74,9 +84,12 @@ seeded flop Monte Carlo measured approximately:
 
 | Case | 10,000 samples |
 |---|---:|
-| Heads-up | 6.96 s |
-| 3-way | 12.06 s |
-| 6-way | 29.01 s |
+| Heads-up | 3.48 s |
+| 3-way | 4.47 s |
+| 6-way | 14.58 s |
 
 These are orientation measurements, not a cross-machine performance guarantee.
-The evaluator remains intentionally simple; native extensions were not added.
+The previous measurements were approximately 6.96 s, 12.06 s, and 29.01 s.
+Reuse of the immutable deck and a bounded rank cache improved the corrected
+implementation without native extensions. Run `python3 -m poker_ai.validation`
+for deterministic small-space exact-versus-Monte-Carlo comparisons.

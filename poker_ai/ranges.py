@@ -74,8 +74,20 @@ _CLASS_PATTERN = re.compile(r"^([AKQJT2-9])([AKQJT2-9])([so]?)(\+?)$")
 class RangeStats:
     raw_combo_count: int
     legal_combo_count: int
-    total_weight: float
-    coverage: float
+    blocked_combo_count: int
+    legal_total_weight: float
+    raw_preflop_coverage: float
+    legal_fraction_of_original_range: float
+
+    @property
+    def total_weight(self) -> float:
+        """Backward-compatible alias for legal_total_weight."""
+        return self.legal_total_weight
+
+    @property
+    def coverage(self) -> float:
+        """Backward-compatible alias for raw_preflop_coverage."""
+        return self.raw_preflop_coverage
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +145,15 @@ class PreflopRange:
             for hand_class, weight in self.class_weights
         )
         legal = self.to_weighted_range(dead_cards)
-        return RangeStats(raw, len(legal.combos), legal.total_weight, raw / 1326)
+        legal_count = len(legal.combos)
+        return RangeStats(
+            raw,
+            legal_count,
+            raw - legal_count,
+            legal.total_weight,
+            raw / 1326,
+            legal_count / raw,
+        )
 
     def matrix(self) -> tuple[tuple[float | None, ...], ...]:
         weights = dict(self.class_weights)

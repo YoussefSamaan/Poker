@@ -14,7 +14,7 @@ from poker_ai.holdem import (
     ScenarioBuilder,
     TableConfig,
 )
-from poker_ai.ranges import RANGE_RANKS, PreflopRange, WeightedRange
+from poker_ai.ranges import PreflopRange, WeightedRange
 from poker_ai.training import (
     PolicyConfig,
     PolicyKind,
@@ -23,9 +23,12 @@ from poker_ai.training import (
     analyze_showdown_baseline,
     board_features,
     capture_decision_review,
+    compare_ranges,
     decision_context,
     describe_current_hand,
     player_table_view,
+    range_matrix_rows,
+    sensitivity_rows,
 )
 
 
@@ -253,7 +256,24 @@ def _render_analysis(st: Any, session: TrainingSession) -> None:
             "QQ+, AKs, AKo" if not advanced else "AhKh:1\nQcQd:0.5",
             key=f"coach_range_{opponent}",
         )
-    samples = st.number_input("Monte Carlo samples", 100, 200_000, 10_000, 100)
+    default_samples = (
+        10_000
+        if len(context.opponent_ids) == 1
+        else max(1_000, 8_000 // len(context.opponent_ids))
+    )
+    precision = st.selectbox(
+        "Estimate precision", ("Quick", "Standard", "Custom"), index=1
+    )
+    if precision == "Quick":
+        samples = 1_000
+        st.caption("Quick estimate: 1,000 samples")
+    elif precision == "Standard":
+        samples = default_samples
+        st.caption(f"Standard estimate: {samples:,} samples")
+    else:
+        samples = st.number_input(
+            "Monte Carlo samples", 100, 200_000, default_samples, 100
+        )
     fold_equity = (
         st.slider("Heads-up assumed fold frequency", 0.0, 1.0, 0.0, 0.05)
         if len(context.opponent_ids) == 1
@@ -280,29 +300,19 @@ def _render_analysis(st: Any, session: TrainingSession) -> None:
             st.warning(result.model_label)
             for opponent, parsed in parsed_preflop.items():
                 stats = parsed.stats(dead)
-                st.write(
-                    f"**{opponent}:** {stats.raw_combo_count} expanded combos; "
-                    f"{stats.legal_combo_count} legal after blockers; "
-                    f"{stats.coverage:.1%} preflop coverage; total legal weight "
-                    f"{stats.total_weight:g}."
-                )
-            if parsed_preflop:
-                first = next(iter(parsed_preflop.values()))
-                matrix = first.matrix()
-                st.dataframe(
-                    [
-                        {
-                            "row": RANGE_RANKS[row],
-                            **{
-                                rank: matrix[row][column]
-                                for column, rank in enumerate(RANGE_RANKS)
-                            },
-                        }
-                        for row in range(13)
-                    ],
-                    hide_index=False,
-                    use_container_width=True,
-                )
+                with st.expander(f"{opponent} range matrix", expanded=True):
+                    st.write(
+                        f"{stats.raw_combo_count} raw combos; "
+                        f"{stats.legal_combo_count} legal; "
+                        f"{stats.blocked_combo_count} blocked; "
+                        f"{stats.raw_preflop_coverage:.1%} raw preflop coverage; "
+                        f"legal total weight {stats.legal_total_weight:g}."
+                    )
+                    st.dataframe(
+                        range_matrix_rows(parsed),
+                        hide_index=True,
+                        use_container_width=True,
+                    )
             equity = result.equity
             interval = equity.confidence_interval_95
             metrics = st.columns(3)
@@ -318,6 +328,8 @@ def _render_analysis(st: Any, session: TrainingSession) -> None:
                 {
                     "action": value.action,
                     "EV": None if value.ev is None else round(value.ev, 3),
+                    "EV SE": value.standard_error,
+                    "EV 95% interval": value.confidence_interval_95,
                     "assumptions": value.assumptions,
                 }
                 for value in result.actions
@@ -379,6 +391,42 @@ def _render_analysis(st: Any, session: TrainingSession) -> None:
                     f"Saved review: best baseline action {review.best_baseline_action}; "
                     f"estimated baseline regret {review.estimated_baseline_regret}."
                 )
+    if len(context.opponent_ids) == 1 and not advanced:
+        st.write("**Range sensitivity**")
+        alternatives = st.text_area(
+            "Named alternative ranges",
+            placeholder="Tight = QQ+,AKs\nMy wider range = 22+,A2s+,KTs+,QJs,AJo+",
+            help="Names and definitions are user supplied; no canonical labels are assumed.",
+        )
+        if st.button("Compare named ranges"):
+            try:
+                dead = context.hero_cards + context.board
+                named = {}
+                for line_number, line in enumerate(alternatives.splitlines(), 1):
+                    if not line.strip():
+                        continue
+                    if "=" not in line:
+                        raise ValueError(
+                            f"sensitivity line {line_number} must use NAME = RANGE"
+                        )
+                    name, expression = line.split("=", 1)
+                    if not name.strip():
+                        raise ValueError(f"sensitivity line {line_number} needs a name")
+                    named[name.strip()] = PreflopRange.parse(
+                        expression
+                    ).to_weighted_range(dead)
+                if not named:
+                    raise ValueError("enter at least one named range")
+                compared = compare_ranges(
+                    session.game, actor, named, samples=samples, seed=101
+                )
+                st.dataframe(
+                    sensitivity_rows(compared),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+            except ValueError as error:
+                st.error(str(error))
 
 
 def _render_scenario_builder(st: Any) -> None:

@@ -24,6 +24,15 @@ class PreflopRangeTests(unittest.TestCase):
         self.assertEqual(stats.raw_combo_count, 34)
         self.assertLess(stats.legal_combo_count, stats.raw_combo_count)
         self.assertAlmostEqual(value.stats().coverage, 34 / 1326)
+        self.assertEqual(
+            stats.blocked_combo_count, stats.raw_combo_count - stats.legal_combo_count
+        )
+        self.assertEqual(stats.raw_preflop_coverage, 34 / 1326)
+        self.assertAlmostEqual(
+            stats.legal_fraction_of_original_range,
+            stats.legal_combo_count / stats.raw_combo_count,
+        )
+        self.assertEqual(stats.legal_total_weight, stats.total_weight)
         weights = {combo.weight for combo in value.to_weighted_range().combos}
         self.assertEqual(weights, {1.0, 0.5, 0.25})
 

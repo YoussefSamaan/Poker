@@ -2,13 +2,19 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+import math
 from typing import Mapping
 
 from ..cards import Card
 from ..evaluation import HandRank, evaluate_holdem
 from ..holdem import Action, BetTo, Call, Check, Fold, PlayerStatus, RaiseTo
 from ..holdem.pots import PotLayer, build_side_pots
-from ..multiway import MultiwayEquityCalculator, MultiwayEquityResult
+from ..multiway import (
+    MultiwayEquityResult,
+    ShowdownSampler,
+    ShowdownWorld,
+    summarize_equity,
+)
 from ..ranges import WeightedRange
 from .analysis import DecisionContext, decision_context
 
@@ -28,6 +34,21 @@ RANK_NAMES = {
     3: "threes",
     2: "twos",
 }
+SINGULAR_RANK_NAMES = {
+    14: "ace",
+    13: "king",
+    12: "queen",
+    11: "jack",
+    10: "ten",
+    9: "nine",
+    8: "eight",
+    7: "seven",
+    6: "six",
+    5: "five",
+    4: "four",
+    3: "three",
+    2: "two",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +66,8 @@ class BaselineAction:
     action: str
     ev: float | None
     assumptions: str
+    standard_error: float | None = None
+    confidence_interval_95: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +96,7 @@ class SensitivityResult:
     required_equity: float
     equity_edge: float
     call_ev: float | None
+    standard_error: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,18 +147,24 @@ def describe_current_hand(hero: tuple[Card, Card], board: tuple[Card, ...]) -> s
 
 def _describe_rank(rank: HandRank) -> str:
     if rank.category == 0:
-        return f"{RANK_NAMES[rank.kickers[0]][:-1]}-high"
+        return f"{SINGULAR_RANK_NAMES[rank.kickers[0]]}-high"
     if rank.category == 1:
         return f"one pair — {RANK_NAMES[rank.kickers[0]]}"
     if rank.category == 2:
         return f"two pair — {RANK_NAMES[rank.kickers[0]]} and {RANK_NAMES[rank.kickers[1]]}"
     if rank.category == 3:
         return f"three of a kind — {RANK_NAMES[rank.kickers[0]]}"
+    if rank.category == 4:
+        return f"straight — {SINGULAR_RANK_NAMES[rank.kickers[0]]}-high"
+    if rank.category == 5:
+        return f"flush — {SINGULAR_RANK_NAMES[rank.kickers[0]]}-high"
     if rank.category == 6:
         return f"full house — {RANK_NAMES[rank.kickers[0]]} over {RANK_NAMES[rank.kickers[1]]}"
     if rank.category == 7:
         return f"four of a kind — {RANK_NAMES[rank.kickers[0]]}"
-    return rank.name
+    if rank.category == 8:
+        return f"straight flush — {SINGULAR_RANK_NAMES[rank.kickers[0]]}-high"
+    raise AssertionError(f"unknown hand category {rank.category}")
 
 
 def analyze_showdown_baseline(
@@ -144,19 +174,32 @@ def analyze_showdown_baseline(
     *,
     samples: int = 20_000,
     seed: int | None = 0,
+    exact: bool | None = None,
 ) -> MultiwayDecisionAnalysis:
     context = decision_context(game, hero_id)
     ranges = tuple(opponent_ranges.get(opponent) for opponent in context.opponent_ids)
-    equity = MultiwayEquityCalculator().calculate(
-        context.hero_cards, context.board, ranges, samples=samples, seed=seed
+    sampler = ShowdownSampler(context.hero_cards, context.board, ranges)
+    use_exact = (
+        exact if exact is not None else sampler.estimated_exact_outcomes() <= 10_000
     )
+    worlds = (
+        tuple(sampler.exact_worlds())
+        if use_exact
+        else sampler.sample_worlds(samples, seed=seed)
+    )
+    method = "exact" if use_exact else "monte_carlo"
+    equity = summarize_equity(worlds, method, seed)
     observation = game.observation_for(hero_id)
     contributions = {
         player.player_id: player.total_contribution for player in observation.players
     }
-    hero_after = contributions[hero_id] + context.to_call
     called_contributions = dict(contributions)
-    called_contributions[hero_id] = hero_after
+    called_contributions[hero_id] += context.to_call
+    for player in observation.players:
+        if player.player_id == hero_id or player.status != PlayerStatus.ACTIVE:
+            continue
+        owed = max(0, observation.current_bet - player.street_contribution)
+        called_contributions[player.player_id] += min(owed, player.stack)
     eligible = {
         player.player_id
         for player in observation.players
@@ -164,41 +207,29 @@ def analyze_showdown_baseline(
     }
     pots = build_side_pots(called_contributions, eligible)
     relevant = tuple(layer for layer in pots if hero_id in layer.eligible_players)
-    expected_payout = 0.0
-    for layer in relevant:
-        layer_opponents = tuple(
-            opponent
-            for opponent in context.opponent_ids
-            if opponent in layer.eligible_players
-        )
-        if not layer_opponents:
-            expected_payout += layer.amount
-            continue
-        if layer_opponents == context.opponent_ids:
-            layer_equity = equity.equity
-        else:
-            layer_equity = (
-                MultiwayEquityCalculator()
-                .calculate(
-                    context.hero_cards,
-                    context.board,
-                    tuple(
-                        opponent_ranges.get(opponent) for opponent in layer_opponents
-                    ),
-                    samples=samples,
-                    seed=seed,
-                )
-                .equity
-            )
-        expected_payout += layer.amount * layer_equity
+    payouts = tuple(
+        hero_payout_for_world(world, hero_id, context.opponent_ids, relevant)
+        for world in worlds
+    )
+    expected_payout, payout_se, payout_interval = summarize_payout_samples(
+        payouts, worlds, method
+    )
     passive_ev = expected_payout - context.to_call
+    ev_interval = (
+        payout_interval[0] - context.to_call,
+        payout_interval[1] - context.to_call,
+    )
     passive_name = "check" if context.to_call == 0 else "call"
     actions = [BaselineAction("fold", 0.0, "Previously invested chips are sunk costs.")]
     actions.append(
         BaselineAction(
             passive_name,
             passive_ev,
-            "All eligible hands run to showdown with fixed ranges and no future betting.",
+            "After Hero's passive action, every remaining active player checks or "
+            "calls the current wager up to its effective stack; nobody raises, "
+            "and fixed ranges use one shared showdown world.",
+            payout_se,
+            ev_interval,
         )
     )
     if context.legal_actions.can_bet or context.legal_actions.can_raise:
@@ -215,10 +246,60 @@ def analyze_showdown_baseline(
         f"Required raw equity is {context.required_equity:.1%}.",
         f"Estimated expected pot share against {len(ranges)} opponent range(s) is {equity.equity:.1%}.",
         f"The Monte Carlo 95% sampling interval is {interval[0]:.1%}–{interval[1]:.1%}.",
-        f"Under the simplified showdown baseline, {passive_name} EV is {passive_ev:+.2f} chips.",
+        f"Under the check/call-to-showdown baseline, {passive_name} EV is "
+        f"{passive_ev:+.2f} chips (simulation SE {payout_se:.2f}; 95% interval "
+        f"{ev_interval[0]:+.2f} to {ev_interval[1]:+.2f}).",
     )
     return MultiwayDecisionAnalysis(
         context, equity, tuple(actions), relevant, explanation
+    )
+
+
+def hero_payout_for_world(
+    world: ShowdownWorld,
+    hero_id: str,
+    opponent_ids: tuple[str, ...],
+    pots: tuple[PotLayer, ...],
+) -> float:
+    ranks = {hero_id: world.player_ranks[0]}
+    ranks.update(zip(opponent_ids, world.player_ranks[1:]))
+    payout = 0.0
+    for layer in pots:
+        eligible_ranks = {
+            player_id: ranks[player_id]
+            for player_id in layer.eligible_players
+            if player_id in ranks
+        }
+        best = max(eligible_ranks.values())
+        winners = tuple(
+            player_id for player_id, rank in eligible_ranks.items() if rank == best
+        )
+        if hero_id in winners:
+            payout += layer.amount / len(winners)
+    return payout
+
+
+def summarize_payout_samples(
+    values: tuple[float, ...],
+    worlds: tuple[ShowdownWorld, ...],
+    method: str,
+) -> tuple[float, float, tuple[float, float]]:
+    total_weight = sum(world.weight for world in worlds)
+    mean = (
+        sum(value * world.weight for value, world in zip(values, worlds)) / total_weight
+    )
+    if method == "monte_carlo" and len(values) > 1:
+        variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+        standard_error = math.sqrt(variance / len(values))
+    else:
+        standard_error = 0.0
+    return (
+        mean,
+        standard_error,
+        (
+            mean - 1.96 * standard_error,
+            mean + 1.96 * standard_error,
+        ),
     )
 
 
@@ -253,6 +334,7 @@ def compare_ranges(
                 context.required_equity,
                 analysis.equity.equity - context.required_equity,
                 passive.ev,
+                passive.standard_error,
             )
         )
     return tuple(results)

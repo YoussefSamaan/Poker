@@ -26,6 +26,9 @@ live poker client and should not be used for real-time assistance.
 - Poker Coach v1 range notation and 13×13 matrices, blocker-aware weighted
   expansion, multiway equity with fractional tie shares, public-safe Player View,
   objective board/hand descriptions, range sensitivity, and decision reviews.
+- Product-conditioned joint opponent sampling, shared showdown worlds for every
+  side-pot layer, chip-denominated passive-EV uncertainty, and interactive
+  quick/standard/custom precision controls.
 - Vanilla CFR implemented from scratch for Kuhn poker, checked against the
   known game value, and evaluated by exhaustive imperfect-information best
   responses (NashConv).
@@ -89,8 +92,9 @@ strategy, or a full poker solver. Aggressive-action EV remains heads-up only.
 
 Poker Coach v1 also accepts conventional ranges such as `QQ+, AKs, AKo` and
 independent ranges for every opponent. Multiway fold/check/call values use a
-simplified no-future-betting showdown model with side-pot eligibility. Multiway
-raise EV remains intentionally unsupported. See
+simplified check/call-to-showdown model with side-pot eligibility. All opponents'
+physical cards and one runout remain fixed across every pot layer in a sampled
+world. Multiway raise EV remains intentionally unsupported. See
 [`docs/POKER_COACH.md`](docs/POKER_COACH.md) for grammar, algorithms, privacy,
 uncertainty, assumptions, and benchmark results.
 

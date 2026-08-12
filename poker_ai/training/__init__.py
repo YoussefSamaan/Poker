@@ -29,8 +29,16 @@ from .coach import (
     capture_decision_review,
     compare_ranges,
     describe_current_hand,
+    hero_payout_for_world,
+    summarize_payout_samples,
 )
-from .views import PlayerTableView, TableSeatView, player_table_view
+from .views import (
+    PlayerTableView,
+    TableSeatView,
+    player_table_view,
+    range_matrix_rows,
+    sensitivity_rows,
+)
 
 __all__ = [
     "BaselineDecisionAnalysis",
@@ -61,5 +69,9 @@ __all__ = [
     "compare_ranges",
     "decision_context",
     "describe_current_hand",
+    "hero_payout_for_world",
     "player_table_view",
+    "range_matrix_rows",
+    "sensitivity_rows",
+    "summarize_payout_samples",
 ]
