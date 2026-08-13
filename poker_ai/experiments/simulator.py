@@ -6,9 +6,15 @@ import json
 from typing import Iterable
 
 from ..agents import PersonalityAgent, StrategyProfile, position_name
-from ..holdem import ActionType, HoldemGame, Street, TableConfig
+from ..holdem import ActionRecord, ActionType, HoldemGame, Street, TableConfig
 from .metrics import StrategyMetrics, summarize_metrics
 from .records import HandExperimentRecord, SeatHandStats
+from .schedule import (
+    Participant,
+    ScheduledHand,
+    build_schedule,
+    participants_from_profiles,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +28,7 @@ class SimulationConfig:
     rotate_profiles: bool = True
     duplicate_deals: bool = False
     record_full_history: bool = False
+    participants: tuple[Participant, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +37,7 @@ class ExperimentResult:
     records: tuple[HandExperimentRecord, ...]
     metrics: tuple[StrategyMetrics, ...]
     position_metrics: tuple[tuple[str, str, StrategyMetrics], ...]
+    metadata: dict[str, object]
 
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(asdict(self), indent=indent, sort_keys=True)
@@ -51,7 +59,7 @@ class ExperimentResult:
         rows = []
         for record in self.records:
             for seat in record.seats:
-                totals[seat.profile] += seat.net_bb
+                totals[seat.participant_id] += seat.net_bb
             rows.append({"hand": record.hand_index + 1, **totals})
         return tuple(rows)
 
@@ -63,41 +71,88 @@ class SimulationRunner:
         if not 2 <= len(config.profiles) <= 6 or config.hands < 1:
             raise ValueError("simulation requires 2–6 profiles and positive hands")
         self.config = config
+        self.participants = config.participants or participants_from_profiles(
+            config.profiles
+        )
+        if len(self.participants) != len(config.profiles):
+            raise ValueError("participants must match profile seat count")
+        identities = tuple(item.participant_id for item in self.participants)
+        if len(set(identities)) != len(identities):
+            raise ValueError("participant IDs must be unique")
+        self.schedule = build_schedule(
+            config.hands,
+            len(config.profiles),
+            config.duplicate_deals,
+            config.rotate_profiles,
+        )
 
     def run(self) -> ExperimentResult:
-        records = tuple(self._run_hand(index) for index in range(self.config.hands))
-        profiles = tuple(
-            dict.fromkeys(profile.name for profile in self.config.profiles)
+        records = tuple(self._run_hand(item) for item in self.schedule)
+        identities = tuple(
+            participant.participant_id for participant in self.participants
         )
         metrics = tuple(
-            summarize_metrics(name, self._seats(records, name)) for name in profiles
+            summarize_metrics(identity, self._seats(records, identity))
+            for identity in identities
         )
         position = []
-        for name in profiles:
-            positions = sorted({seat.position for seat in self._seats(records, name)})
+        for identity in identities:
+            positions = sorted(
+                {seat.position for seat in self._seats(records, identity)}
+            )
             for label in positions:
                 position.append(
                     (
-                        name,
+                        identity,
                         label,
                         summarize_metrics(
-                            name,
+                            identity,
                             (
                                 seat
-                                for seat in self._seats(records, name)
+                                for seat in self._seats(records, identity)
                                 if seat.position == label
                             ),
                         ),
                     )
                 )
-        return ExperimentResult(self.config, records, metrics, tuple(position))
+        metadata: dict[str, object] = {
+            "schedule_type": "cyclic_duplicate_blocks"
+            if self.config.duplicate_deals
+            else "balanced_button_blocks",
+            "duplicate_mode": self.config.duplicate_deals,
+            "duplicate_block_size": len(self.participants)
+            if self.config.duplicate_deals
+            else None,
+            "physical_hands": self.config.hands,
+            "independent_duplicate_blocks": self.config.hands // len(self.participants)
+            if self.config.duplicate_deals
+            else 0,
+            "master_seed": self.config.master_seed,
+            "participants": tuple(
+                {
+                    "id": p.participant_id,
+                    "label": p.label,
+                    "fingerprint": p.profile_fingerprint,
+                }
+                for p in self.participants
+            ),
+            "button_schedule": tuple(item.button for item in self.schedule),
+        }
+        return ExperimentResult(
+            self.config, records, metrics, tuple(position), metadata
+        )
 
-    def _run_hand(self, index: int) -> HandExperimentRecord:
+    def _run_hand(self, scheduled: ScheduledHand) -> HandExperimentRecord:
         count = len(self.config.profiles)
-        rotation = index % count if self.config.rotate_profiles else 0
-        profiles = self.config.profiles[rotation:] + self.config.profiles[:rotation]
-        button = index % count
-        deal_index = index // 2 if self.config.duplicate_deals else index
+        index = scheduled.hand_index
+        assigned = tuple(
+            self.participants[item] for item in scheduled.participant_indices_by_seat
+        )
+        profiles = tuple(item.profile for item in assigned)
+        button = scheduled.button
+        deal_index = (
+            scheduled.duplicate_block_id if self.config.duplicate_deals else index
+        )
         deal_seed = _seed(self.config.master_seed, "deck", deal_index)
         players = tuple(f"P{seat + 1}" for seat in range(count))
         stack = self.config.stack_bb * self.config.big_blind
@@ -130,7 +185,13 @@ class SimulationRunner:
             raise AssertionError("terminal hand must have a result")
         seats = tuple(
             _seat_stats(
-                game, player, profiles[seat].name, seat, stack, self.config.big_blind
+                game,
+                player,
+                profiles[seat].name,
+                assigned[seat].participant_id,
+                seat,
+                stack,
+                self.config.big_blind,
             )
             for seat, player in enumerate(players)
         )
@@ -151,6 +212,12 @@ class SimulationRunner:
             deal_seed,
             button,
             tuple((player, profiles[seat].name) for seat, player in enumerate(players)),
+            tuple(
+                (player, assigned[seat].participant_id)
+                for seat, player in enumerate(players)
+            ),
+            scheduled.duplicate_block_id,
+            scheduled.duplicate_leg,
             seats,
             result.winners,
             result.showdown,
@@ -160,13 +227,13 @@ class SimulationRunner:
 
     @staticmethod
     def _seats(
-        records: tuple[HandExperimentRecord, ...], profile: str
+        records: tuple[HandExperimentRecord, ...], participant_id: str
     ) -> tuple[SeatHandStats, ...]:
         return tuple(
             seat
             for record in records
             for seat in record.seats
-            if seat.profile == profile
+            if seat.participant_id == participant_id
         )
 
 
@@ -179,19 +246,32 @@ def sweep_parameter(
     hands: int = 1_000,
     seed: int = 0,
 ) -> tuple[tuple[float, ExperimentResult], ...]:
-    return tuple(
-        (
-            value,
-            SimulationRunner(
-                SimulationConfig(
-                    (base_profile.with_parameter(parameter, value), *opponents),
-                    hands=hands,
-                    master_seed=seed,
-                )
-            ).run(),
+    results = []
+    for value in values:
+        variant = base_profile.with_parameter(parameter, value)
+        profiles = (variant, *opponents)
+        value_label = format(value, ".12g")
+        participants = (
+            Participant(
+                f"sweep_{parameter}_{value_label}",
+                f"{base_profile.name} | {parameter}={value_label}",
+                variant,
+            ),
+            *tuple(
+                Participant(f"opponent_{index}", profile.name, profile)
+                for index, profile in enumerate(opponents, start=1)
+            ),
         )
-        for value in values
-    )
+        result = SimulationRunner(
+            SimulationConfig(
+                profiles,
+                hands=hands,
+                master_seed=seed,
+                participants=participants,
+            )
+        ).run()
+        results.append((value, result))
+    return tuple(results)
 
 
 def _seed(master: int, *parts: object) -> int:
@@ -203,6 +283,7 @@ def _seat_stats(
     game: HoldemGame,
     player: str,
     profile: str,
+    participant_id: str,
     seat: int,
     starting: int,
     big_blind: int,
@@ -221,17 +302,7 @@ def _seat_stats(
             ActionType.FOLD,
         }
     )
-    raises_before = 0
-    opportunities = three_bets = 0
-    for record in game.history:
-        if record.street != Street.PREFLOP:
-            continue
-        if record.player_id == player and raises_before == 1:
-            opportunities = 1
-            if record.action_type == ActionType.RAISE:
-                three_bets += 1
-        if record.action_type == ActionType.RAISE:
-            raises_before += 1
+    opportunities, three_bets = _three_bet_counts(game.history, player)
     actions = tuple(
         record
         for record in records
@@ -244,6 +315,7 @@ def _seat_stats(
     return SeatHandStats(
         player,
         profile,
+        participant_id,
         seat,
         position_name(observation, player),
         final_stack - starting,
@@ -253,6 +325,7 @@ def _seat_stats(
         opportunities,
         three_bets,
         sum(record.action_type == ActionType.FOLD for record in actions),
+        sum(record.action_type == ActionType.CHECK for record in actions),
         sum(record.action_type == ActionType.CALL for record in actions),
         sum(
             record.action_type in {ActionType.BET, ActionType.RAISE}
@@ -262,5 +335,24 @@ def _seat_stats(
         sum(
             record.action_type in {ActionType.BET, ActionType.RAISE} for record in post
         ),
-        game.result.showdown,
+        game.result.showdown
+        and not any(record.action_type == ActionType.FOLD for record in records),
     )
+
+
+def _three_bet_counts(
+    history: Iterable[ActionRecord], player: str
+) -> tuple[int, int]:
+    """Return opportunities and 3-bets before a second voluntary raise exists."""
+    raises_before = 0
+    opportunities = three_bets = 0
+    for record in history:
+        if record.street != Street.PREFLOP:
+            continue
+        if record.player_id == player and raises_before == 1:
+            opportunities += 1
+            if record.action_type == ActionType.RAISE:
+                three_bets += 1
+        if record.action_type == ActionType.RAISE:
+            raises_before += 1
+    return opportunities, three_bets

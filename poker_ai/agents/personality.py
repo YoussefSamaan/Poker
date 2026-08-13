@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 import random
 
 from ..holdem import (
@@ -24,6 +25,13 @@ class PersonalityAgent:
 
     def __init__(self, profile: StrategyProfile, seed: int | None = 0) -> None:
         self.profile = profile
+        self._open_ranges = {
+            position: _compiled_range(expression)
+            for position, expression in profile.open_ranges
+        }
+        self._call_open = _compiled_range(profile.call_open_range)
+        self._three_bet = _compiled_range(profile.three_bet_range)
+        self._continue = _compiled_range(profile.continue_vs_reraise_range)
         self._rng = random.Random(seed)
         self.last_trace: DecisionTrace | None = None
 
@@ -41,6 +49,8 @@ class PersonalityAgent:
             for family, probability in distribution.items()
             if family in legal_families
         }
+        if legal.can_check:
+            filtered.pop("fold", None)
         if not filtered or sum(filtered.values()) <= 0:
             fallback = (
                 "check" if legal.can_check else ("call" if legal.can_call else "fold")
@@ -97,7 +107,9 @@ class PersonalityAgent:
     ) -> dict[str, float]:
         hand = features.hand_class
         if features.prior_raises == 0:
-            inside = _contains(self.profile.open_range(features.position), hand)
+            inside = hand in self._open_ranges.get(
+                features.position, self._open_ranges["default"]
+            )
             if inside:
                 aggressive = self.profile.open_raise_frequency
                 call = self.profile.limp_frequency
@@ -110,20 +122,12 @@ class PersonalityAgent:
             return {"check": 0.12, "fold": 0.88}
         if features.prior_raises == 1:
             three_bet = (
-                self.profile.three_bet_frequency
-                if _contains(self.profile.three_bet_range, hand)
-                else 0.02
+                self.profile.three_bet_frequency if hand in self._three_bet else 0.02
             )
-            call = (
-                self.profile.call_open_frequency
-                if _contains(self.profile.call_open_range, hand)
-                else 0.03
-            )
+            call = self.profile.call_open_frequency if hand in self._call_open else 0.03
             return {"raise": three_bet, "call": call, "fold": 1 - three_bet - call}
         continue_weight = (
-            self.profile.call_open_frequency
-            if _contains(self.profile.continue_vs_reraise_range, hand)
-            else 0.02
+            self.profile.call_open_frequency if hand in self._continue else 0.02
         )
         return {
             "raise": self.profile.three_bet_frequency * 0.35,
@@ -137,13 +141,13 @@ class PersonalityAgent:
         bucket = features.bucket.value
         aggression = self.profile.table("aggression_weights").get(bucket, 0.2)
         call = self.profile.table("call_weights").get(bucket, 0.2)
+        fold = self.profile.table("fold_weights").get(bucket, 0.2)
         if bucket == "air":
-            aggression = self.profile.bluff_frequency
+            aggression *= 1 + self.profile.bluff_frequency
         elif bucket == "draw":
-            aggression = min(1.0, aggression * self.profile.semi_bluff_multiplier)
+            aggression *= self.profile.semi_bluff_multiplier
         if legal.can_check:
             return {"bet": aggression, "check": 1 - aggression}
-        fold = max(0.0, 1 - aggression - call)
         return {"raise": aggression, "call": call, "fold": fold}
 
     def _action_for_family(
@@ -183,10 +187,6 @@ class PersonalityAgent:
         return BetTo(target) if family == "bet" else RaiseTo(target)
 
 
-def _contains(expression: str, hand_class: str) -> bool:
-    return hand_class in dict(PreflopRange.parse(expression).class_weights)
-
-
 def _legal_families(legal: LegalActions) -> set[str]:
     families = set()
     if legal.can_fold:
@@ -200,3 +200,9 @@ def _legal_families(legal: LegalActions) -> set[str]:
     if legal.can_raise:
         families.add("raise")
     return families
+
+
+@lru_cache(maxsize=256)
+def _compiled_range(expression: str) -> frozenset[str]:
+    """Compile a validated range once, then share its immutable class set."""
+    return frozenset(dict(PreflopRange.parse(expression).class_weights))

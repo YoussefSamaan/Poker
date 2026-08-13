@@ -592,7 +592,21 @@ def main() -> None:
         simulation_stack = st.number_input("Starting stack (BB)", 10, 500, 100)
         simulation_seed = st.number_input("Experiment seed", 0, 2**31 - 1, 42)
         duplicate = st.toggle("Duplicate-deal mode")
-        if st.button("Run simulation"):
+        if duplicate:
+            rounded_hands = simulation_hands - (simulation_hands % player_count)
+            st.info(
+                "Duplicate balanced blocks reuse one deal and button while rotating "
+                f"all {player_count} participants through physical seats. Requested "
+                f"physical hands: {simulation_hands:,}; complete-block hands: {rounded_hands:,}; "
+                f"independent blocks: {rounded_hands // player_count:,}."
+            )
+            simulation_hands = rounded_hands
+        can_run = simulation_hands >= player_count if duplicate else True
+        if duplicate and not can_run:
+            st.error(
+                f"Duplicate mode needs at least one complete {player_count}-hand block."
+            )
+        if st.button("Run simulation", disabled=not can_run):
             with st.spinner("Running independent offline hands..."):
                 result = SimulationRunner(
                     SimulationConfig(
@@ -606,6 +620,11 @@ def main() -> None:
             st.session_state.simulation_result = result
         if "simulation_result" in st.session_state:
             result = st.session_state.simulation_result
+            st.caption(
+                f"Method: {result.metadata['schedule_type']}; physical hands: "
+                f"{result.metadata['physical_hands']}; independent duplicate blocks: "
+                f"{result.metadata['independent_duplicate_blocks']}."
+            )
             st.dataframe(
                 [
                     {
@@ -619,6 +638,7 @@ def main() -> None:
                         "3-bet": metric.three_bet_frequency,
                         "Call": metric.call_frequency,
                         "Fold": metric.fold_frequency,
+                        "Check": metric.check_frequency,
                         "Aggression": metric.postflop_aggression_frequency,
                         "Showdown": metric.showdown_rate,
                     }
@@ -631,6 +651,23 @@ def main() -> None:
                 "Wide confidence intervals mean the experiment does not identify a winner."
             )
             st.line_chart(result.cumulative_net_bb(), x="hand")
+            position_counts: dict[str, dict[str, int]] = {}
+            for record in result.records:
+                for seat in record.seats:
+                    key = seat.participant_id
+                    position_counts.setdefault(key, {})
+                    position_counts[key][seat.position] = (
+                        position_counts[key].get(seat.position, 0) + 1
+                    )
+            st.write("**Position-balance diagnostics**")
+            st.dataframe(
+                [
+                    {"Participant": key, **counts}
+                    for key, counts in position_counts.items()
+                ],
+                hide_index=True,
+                use_container_width=True,
+            )
             st.download_button(
                 "Export experiment JSON",
                 result.to_json(),

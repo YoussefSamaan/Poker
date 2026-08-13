@@ -22,6 +22,7 @@ class StrategyMetrics:
     pfr: float
     three_bet_frequency: float
     fold_frequency: float
+    check_frequency: float
     call_frequency: float
     bet_raise_frequency: float
     postflop_aggression_frequency: float
@@ -40,7 +41,9 @@ def summarize_metrics(profile: str, seats: Iterable[SeatHandStats]) -> StrategyM
     )
     sd = math.sqrt(variance)
     se100 = sd / math.sqrt(hands) * 100
-    actions = sum(value.folds + value.calls + value.bets_raises for value in values)
+    actions = sum(
+        value.folds + value.checks + value.calls + value.bets_raises for value in values
+    )
     opportunities = sum(value.three_bet_opportunities for value in values)
     postflop = sum(value.postflop_actions for value in values)
     bb100 = mean * 100
@@ -60,10 +63,11 @@ def summarize_metrics(profile: str, seats: Iterable[SeatHandStats]) -> StrategyM
         if opportunities
         else 0.0,
         sum(value.folds for value in values) / actions if actions else 0.0,
+        sum(value.checks for value in values) / actions if actions else 0.0,
         sum(value.calls for value in values) / actions if actions else 0.0,
         sum(value.bets_raises for value in values) / actions if actions else 0.0,
         sum(value.postflop_bets_raises for value in values) / postflop
         if postflop
         else 0.0,
-        sum(value.showdown for value in values) / hands,
+        sum(value.player_reached_showdown for value in values) / hands,
     )

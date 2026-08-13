@@ -16,22 +16,24 @@ class ExperimentTests(unittest.TestCase):
     def test_metrics_known_formula(self):
         rows = tuple(
             SeatHandStats(
-                "P",
-                "X",
-                0,
-                "BTN",
-                net,
-                net / 2,
-                vpip,
-                pfr,
-                1,
-                three,
-                folds,
-                calls,
-                raises,
-                2,
-                raises,
-                showdown,
+                player_id="P",
+                profile="X",
+                participant_id="x",
+                seat=0,
+                position="BTN",
+                net_chips=net,
+                net_bb=net / 2,
+                vpip=vpip,
+                pfr=pfr,
+                three_bet_opportunities=1,
+                three_bets=three,
+                folds=folds,
+                checks=0,
+                calls=calls,
+                bets_raises=raises,
+                postflop_actions=2,
+                postflop_bets_raises=raises,
+                player_reached_showdown=showdown,
             )
             for net, vpip, pfr, three, folds, calls, raises, showdown in (
                 (2, True, True, 1, 0, 0, 1, True),
@@ -99,6 +101,9 @@ class ExperimentTests(unittest.TestCase):
             seed=1,
         )
         self.assertEqual([value for value, _ in results], [0.0, 0.5])
+        identities = [result.metrics[0].profile for _, result in results]
+        self.assertEqual(len(set(identities)), 2)
+        self.assertIn("bluff_frequency_0", identities[0])
 
     def test_optional_full_history_remains_json_exportable(self):
         result = SimulationRunner(

@@ -13,7 +13,11 @@ family to a legal engine action, and emits a deterministic `DecisionTrace`.
 
 Features include position, active players, pot/call/pot odds, effective stack,
 SPR, current-street raises/aggressor, canonical preflop class, made-hand category,
-flush/open-ended draws, and objective board texture. Postflop buckets are:
+flush/open-ended/gutshot draws, and objective board texture. The previous
+aggressor is the player who made the most recent bet or raise on the street, even
+after intervening calls or checks. Straight draws are classified by distinct
+rank values that complete a straight: two or more is open-ended, exactly one is
+a gutshot, and an already-made straight is not a draw.
 
 - `AIR`: evaluated high card without a recognized draw.
 - `DRAW`: flush or open-ended straight draw without a made pair.
@@ -41,14 +45,25 @@ No simulation decision calls the Monte Carlo equity calculator.
 
 Presets instantiate `StrategyProfile`; policy code never branches on a preset
 name. Profiles serialize to explicit dictionaries and support safe replacement
-of selected sweep parameters.
+of selected sweep parameters. Construction validates probability-like frequency
+fields in `[0, 1]`, non-negative finite behavioral weights, positive finite size
+choices and weights, a finite non-negative semi-bluff multiplier, and every
+configured range expression. Invalid sweep values fail immediately.
 
 ## Preflop and sizing model
 
 Position names are `BTN/SB,BB` heads-up; `BTN,SB,BB` three-handed; then CO, HJ,
 and UTG are added as table size grows. Profiles distinguish unopened pots, one
 prior raise, and multiple raises. Range membership and configured frequencies
-produce fold/call/raise probabilities.
+produce fold/call/raise probabilities. All preflop ranges are parsed once when an
+agent is created and stored as immutable hand-class sets. A legal free check
+always removes folding from the distribution for all shipped profiles.
+
+Postflop `fold_weights`, `call_weights`, and `aggression_weights` are independent
+behavioral weights, not literal probabilities. The agent applies pure-bluff or
+semi-bluff modifiers, removes illegal action families, then normalizes the
+remaining weights. Consequently changing one configured tendency changes its
+normalized share without silently rewriting either of the other tendencies.
 
 Open sizes are weighted BB choices and re-raises use a simplified multiplier.
 Postflop sizes are weighted pot fractions. Every target is clamped to the exact

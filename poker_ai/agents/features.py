@@ -10,6 +10,11 @@ from ..holdem import ActionType, LegalActions, PlayerObservation, Street
 from ..training.coach import board_features
 
 
+_STRAIGHT_WINDOWS = tuple(
+    frozenset(range(start, start + 5)) for start in range(1, 11)
+)
+
+
 class HandBucket(Enum):
     AIR = "air"
     DRAW = "draw"
@@ -44,6 +49,7 @@ class DecisionFeatures:
     bucket: HandBucket
     flush_draw: bool
     open_ended_straight_draw: bool
+    gutshot_straight_draw: bool
     board_paired: bool
     board_suit_texture: str
 
@@ -105,14 +111,23 @@ def extract_features(
         ),
         default=max(1, observation.current_bet),
     )
-    previous_aggressor = bool(
-        street_history
-        and street_history[-1].player_id == observation.player_id
-        and street_history[-1].action_type in aggressive
+    last_aggressive = next(
+        (
+            record
+            for record in reversed(street_history)
+            if record.action_type in aggressive
+        ),
+        None,
+    )
+    previous_aggressor = (
+        last_aggressive is not None
+        and last_aggressive.player_id == observation.player_id
     )
     hand_class = canonical_hand_class(observation.hole_cards)
     flush_draw = _flush_draw(observation.hole_cards + observation.board)
-    straight_draw = _open_ended_draw(observation.hole_cards + observation.board)
+    completions = _straight_completion_ranks(observation.hole_cards + observation.board)
+    straight_draw = len(completions) >= 2
+    gutshot = len(completions) == 1
     category = None
     if len(observation.board) >= 3:
         category = evaluate_holdem(observation.hole_cards + observation.board).name
@@ -148,6 +163,7 @@ def extract_features(
         bucket,
         flush_draw,
         straight_draw,
+        gutshot,
         texture.paired,
         texture.suit_texture,
     )
@@ -177,10 +193,15 @@ def _flush_draw(cards: tuple[Card, ...]) -> bool:
     return max(Counter(card.suit for card in cards).values(), default=0) == 4
 
 
-def _open_ended_draw(cards: tuple[Card, ...]) -> bool:
+def _straight_completion_ranks(cards: tuple[Card, ...]) -> frozenset[int]:
     values = {card.rank_value for card in cards}
-    if 14 in values:
-        values.add(1)
-    return any(
-        len(values.intersection(range(start, start + 4))) == 4 for start in range(1, 11)
-    )
+    normalized = values | ({1} if 14 in values else set())
+    if any(window <= normalized for window in _STRAIGHT_WINDOWS):
+        return frozenset()
+    completions = set()
+    for window in _STRAIGHT_WINDOWS:
+        missing = window - normalized
+        if len(missing) == 1:
+            rank = next(iter(missing))
+            completions.add(14 if rank == 1 else rank)
+    return frozenset(completions)

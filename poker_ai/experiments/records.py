@@ -8,6 +8,7 @@ from typing import Any
 class SeatHandStats:
     player_id: str
     profile: str
+    participant_id: str
     seat: int
     position: str
     net_chips: int
@@ -17,11 +18,12 @@ class SeatHandStats:
     three_bet_opportunities: int
     three_bets: int
     folds: int
+    checks: int
     calls: int
     bets_raises: int
     postflop_actions: int
     postflop_bets_raises: int
-    showdown: bool
+    player_reached_showdown: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +32,9 @@ class HandExperimentRecord:
     deal_seed: int
     button: int
     assignments: tuple[tuple[str, str], ...]
+    participant_assignments: tuple[tuple[str, str], ...]
+    duplicate_block_id: int | None
+    duplicate_leg: int | None
     seats: tuple[SeatHandStats, ...]
     winners: tuple[str, ...]
     went_to_showdown: bool
