@@ -16,6 +16,8 @@ from poker_ai.holdem import (
 )
 from poker_ai.agents import PRESETS
 from poker_ai.experiments import SimulationConfig, SimulationRunner
+from poker_ai.experiments.schedule import Participant
+from poker_ai.opponents import OpponentModel
 from poker_ai.ranges import PreflopRange, WeightedRange
 from poker_ai.training import (
     PolicyConfig,
@@ -270,14 +272,30 @@ def _render_analysis(st: Any, session: TrainingSession) -> None:
         f"**Pot odds:** call {context.to_call} into {context.pot}; "
         f"required equity {context.required_equity:.1%}."
     )
-    advanced = st.toggle("Advanced concrete-combo input")
-    range_inputs: dict[str, str] = {}
-    for opponent in context.opponent_ids:
-        range_inputs[opponent] = st.text_area(
-            f"{opponent} range",
-            "QQ+, AKs, AKo" if not advanced else "AhKh:1\nQcQd:0.5",
-            key=f"coach_range_{opponent}",
+    model_map = st.session_state.get("opponent_models", {})
+    model_available = all(opponent in model_map for opponent in context.opponent_ids)
+    range_source = st.radio(
+        "Range source",
+        ("Manual", "Opponent Model v1"),
+        horizontal=True,
+        disabled=not model_available,
+    )
+    if not model_available:
+        st.caption(
+            "Build matching opponent models in the Opponent Model tab to enable "
+            "inferred ranges."
         )
+    advanced = st.toggle(
+        "Advanced concrete-combo input", disabled=range_source != "Manual"
+    )
+    range_inputs: dict[str, str] = {}
+    if range_source == "Manual":
+        for opponent in context.opponent_ids:
+            range_inputs[opponent] = st.text_area(
+                f"{opponent} range",
+                "QQ+, AKs, AKo" if not advanced else "AhKh:1\nQcQd:0.5",
+                key=f"coach_range_{opponent}",
+            )
     default_samples = (
         10_000
         if len(context.opponent_ids) == 1
@@ -306,13 +324,19 @@ def _render_analysis(st: Any, session: TrainingSession) -> None:
             dead = context.hero_cards + context.board
             ranges = {}
             parsed_preflop = {}
-            for opponent, text in range_inputs.items():
-                if advanced:
-                    ranges[opponent] = parse_weighted_range(text)
-                else:
-                    parsed = PreflopRange.parse(text)
-                    parsed_preflop[opponent] = parsed
-                    ranges[opponent] = parsed.to_weighted_range(dead)
+            if range_source == "Opponent Model v1":
+                ranges = {
+                    opponent: model_map[opponent].inferred_range().without_blocked(dead)
+                    for opponent in context.opponent_ids
+                }
+            else:
+                for opponent, text in range_inputs.items():
+                    if advanced:
+                        ranges[opponent] = parse_weighted_range(text)
+                    else:
+                        parsed = PreflopRange.parse(text)
+                        parsed_preflop[opponent] = parsed
+                        ranges[opponent] = parsed.to_weighted_range(dead)
             result = analyze_showdown_baseline(
                 session.game, actor, ranges, samples=samples, seed=0
             )
@@ -320,6 +344,17 @@ def _render_analysis(st: Any, session: TrainingSession) -> None:
             st.error(str(error))
         else:
             st.warning(result.model_label)
+            if range_source == "Opponent Model v1":
+                st.info(
+                    "Range source: Opponent Model v1. Model uncertainty is not included "
+                    "in the Monte Carlo equity interval."
+                )
+                for opponent in context.opponent_ids:
+                    snapshot = model_map[opponent].snapshot()
+                    st.write(
+                        f"{opponent}: {snapshot.hands_observed} observed hands; "
+                        f"range entropy {snapshot.range_summary.entropy:.2f} nats."
+                    )
             for opponent, parsed in parsed_preflop.items():
                 stats = parsed.stats(dead)
                 with st.expander(f"{opponent} range matrix", expanded=True):
@@ -550,8 +585,8 @@ def main() -> None:
             "application/json",
         )
 
-    trainer, builder_tab, simulation_tab = st.tabs(
-        ("Trainer", "Scenario builder", "Simulation Lab")
+    trainer, builder_tab, simulation_tab, opponent_tab = st.tabs(
+        ("Trainer", "Scenario builder", "Simulation Lab", "Opponent Model")
     )
     with trainer:
         session = st.session_state.training_session
@@ -680,6 +715,83 @@ def main() -> None:
                 "simulation-metrics.csv",
                 "text/csv",
             )
+    with opponent_tab:
+        _render_opponent_model_lab(st)
+
+
+def _render_opponent_model_lab(st: Any) -> None:
+    st.subheader("Opponent Model v1 — offline synthetic study")
+    target_id = st.text_input("Opponent ID", "P2")
+    profile_key = st.selectbox(
+        "Synthetic generator used only for research validation", tuple(PRESETS)
+    )
+    hands = st.number_input("Observed hands", 2, 10_000, 100)
+    seed = st.number_input("Model experiment seed", 0, 2**31 - 1, 17)
+    if st.button("Generate public observations and fit model"):
+        observer = Participant("P1", "Observer", PRESETS["tag"])
+        villain = Participant(target_id, "Unlabeled opponent", PRESETS[profile_key])
+        result = SimulationRunner(
+            SimulationConfig(
+                (observer.profile, villain.profile),
+                hands=hands,
+                master_seed=seed,
+                participants=(observer, villain),
+            )
+        ).run()
+        model = OpponentModel("P1", target_id)
+        for record in result.records:
+            for decision in record.observed_decisions:
+                model.observe(decision)
+        st.session_state.setdefault("opponent_models", {})[target_id] = model
+    model = st.session_state.get("opponent_models", {}).get(target_id)
+    if model is None:
+        st.caption("No fitted model for this opponent ID yet.")
+        return
+    snapshot = model.snapshot()
+    st.write("\n".join(model.explanation()))
+    rows = []
+    for name, estimate in snapshot.tendencies.items():
+        rows.append(
+            {
+                "Tendency": name,
+                "Mean": estimate.mean,
+                "95% credible interval": estimate.credible_interval_95,
+                "Opportunities": estimate.opportunities,
+            }
+        )
+    st.dataframe(rows, hide_index=True, use_container_width=True)
+    st.write("**Synthetic-archetype posterior (uniform prior)**")
+    st.dataframe(
+        [
+            {"Archetype": name, "Probability": probability}
+            for name, probability in sorted(
+                snapshot.archetype_posterior.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+        ],
+        hide_index=True,
+        use_container_width=True,
+    )
+    summary = snapshot.range_summary
+    st.caption(
+        f"{summary.legal_combo_count} legal combos; entropy {summary.entropy:.2f}; "
+        f"effective combos exp(H)={summary.effective_combo_count:.1f}."
+    )
+    st.dataframe(
+        [
+            {
+                "Rank": rank,
+                **{
+                    column: row[index]
+                    for index, column in enumerate("AKQJT98765432")
+                },
+            }
+            for rank, row in zip("AKQJT98765432", summary.matrix)
+        ],
+        hide_index=True,
+        use_container_width=True,
+    )
 
 
 if __name__ == "__main__":

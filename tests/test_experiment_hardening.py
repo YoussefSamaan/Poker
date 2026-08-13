@@ -321,18 +321,48 @@ class BehavioralMetricDefinitionTests(unittest.TestCase):
             "open_three_bet_original_again": (0, 0),
         }
         for name, actions in cases.items():
-            history = tuple(
-                _action(index, player, action, Street.PREFLOP)
-                for index, (player, action) in enumerate(actions)
-            )
-            self.assertEqual(_three_bet_counts(history, "H"), expected[name], name)
+            raises = 0
+            decisions = []
+            for index, (player, action) in enumerate(actions):
+                decisions.append(
+                    _observed(index, player, action.value, raises, can_raise=True)
+                )
+                raises += action == ActionType.RAISE
+            self.assertEqual(_three_bet_counts(decisions, "H"), expected[name], name)
+
+
+def _observed(sequence, player, family, raises, can_raise):
+    from poker_ai.holdem import PlayerStatus, PublicPlayerState
+    from poker_ai.opponents import ObservedDecision
+
+    players = (
+        PublicPlayerState("H", 0, 100, PlayerStatus.ACTIVE, 0, 0),
+        PublicPlayerState("A", 1, 100, PlayerStatus.ACTIVE, 0, 0),
+    )
+    return ObservedDecision(
+        0, player, player, Street.PREFLOP, "BTN/SB", (), "H", "H", "A",
+        players, (), 3, 2, 2 if raises else 0, True, not raises, bool(raises),
+        not raises, can_raise, raises, None, 2, family, None, None,
+    )
 
 
 def _action(
     sequence: int, player: str, action_type: ActionType, street: Street
 ) -> ActionRecord:
     return ActionRecord(
-        sequence, street, player, action_type, 0, None, 0, 0, 0, 0, 0, 100, 100,
+        sequence,
+        street,
+        player,
+        action_type,
+        0,
+        None,
+        0,
+        0,
+        0,
+        0,
+        0,
+        100,
+        100,
         False,
     )
 

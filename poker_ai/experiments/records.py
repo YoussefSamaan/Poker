@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from ..opponents.observation import ObservedDecision, ResearchDecisionLabels
+
 
 @dataclass(frozen=True, slots=True)
 class SeatHandStats:
@@ -39,4 +41,6 @@ class HandExperimentRecord:
     winners: tuple[str, ...]
     went_to_showdown: bool
     action_count: int
+    observed_decisions: tuple[ObservedDecision, ...] = ()
+    research_labels: tuple[ResearchDecisionLabels, ...] = ()
     history: tuple[dict[str, Any], ...] | None = None

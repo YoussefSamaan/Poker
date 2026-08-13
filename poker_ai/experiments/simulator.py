@@ -1,12 +1,26 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from enum import Enum
 import hashlib
 import json
-from typing import Iterable
+from typing import Callable, Iterable, Protocol
 
 from ..agents import PersonalityAgent, StrategyProfile, position_name
-from ..holdem import ActionRecord, ActionType, HoldemGame, Street, TableConfig
+from ..holdem import (
+    Action,
+    ActionType,
+    HoldemGame,
+    LegalActions,
+    PlayerObservation,
+    Street,
+    TableConfig,
+)
+from ..opponents.observation import (
+    ObservedDecision,
+    ResearchDecisionLabels,
+    observe_decision,
+)
 from .metrics import StrategyMetrics, summarize_metrics
 from .records import HandExperimentRecord, SeatHandStats
 from .schedule import (
@@ -40,7 +54,14 @@ class ExperimentResult:
     metadata: dict[str, object]
 
     def to_json(self, indent: int = 2) -> str:
-        return json.dumps(asdict(self), indent=indent, sort_keys=True)
+        return json.dumps(
+            asdict(self),
+            indent=indent,
+            sort_keys=True,
+            default=lambda value: (
+                value.value if isinstance(value, Enum) else str(value)
+            ),
+        )
 
     def metrics_csv(self) -> str:
         fields = tuple(asdict(self.metrics[0])) if self.metrics else ()
@@ -64,13 +85,31 @@ class ExperimentResult:
         return tuple(rows)
 
 
+class DecisionPolicy(Protocol):
+    def decide(
+        self, observation: PlayerObservation, legal_actions: LegalActions
+    ) -> Action: ...
+
+
+PolicyFactory = Callable[[Participant, int, int], DecisionPolicy]
+DecisionObserver = Callable[[ObservedDecision], None]
+
+
 class SimulationRunner:
     """Independent cash-hand evaluator with deterministic seed hierarchy."""
 
-    def __init__(self, config: SimulationConfig) -> None:
+    def __init__(
+        self,
+        config: SimulationConfig,
+        *,
+        policy_factory: PolicyFactory | None = None,
+        decision_observer: DecisionObserver | None = None,
+    ) -> None:
         if not 2 <= len(config.profiles) <= 6 or config.hands < 1:
             raise ValueError("simulation requires 2–6 profiles and positive hands")
         self.config = config
+        self.policy_factory = policy_factory
+        self.decision_observer = decision_observer
         self.participants = config.participants or participants_from_profiles(
             config.profiles
         )
@@ -167,18 +206,41 @@ class SimulationRunner:
             seed=deal_seed,
         )
         agents = {
-            player: PersonalityAgent(
-                profiles[seat], _seed(self.config.master_seed, "policy", index, seat)
+            player: (
+                self.policy_factory(assigned[seat], index, seat)
+                if self.policy_factory is not None
+                else PersonalityAgent(
+                    profiles[seat], _seed(self.config.master_seed, "policy", index, seat)
+                )
             )
             for seat, player in enumerate(players)
         }
+        observed_decisions: list[ObservedDecision] = []
+        research_labels: list[ResearchDecisionLabels] = []
         game.start_hand()
         while not game.is_terminal:
             actor = game.current_player
             if actor is None:
                 raise AssertionError("non-terminal hand must have a current actor")
             observation = game.observation_for(actor)
-            action = agents[actor].decide(observation, game.legal_actions(actor))
+            legal = game.legal_actions(actor)
+            action = agents[actor].decide(observation, legal)
+            participant = assigned[players.index(actor)]
+            public_decision = observe_decision(
+                index, participant.participant_id, observation, legal, action
+            )
+            observed_decisions.append(public_decision)
+            if self.decision_observer is not None:
+                self.decision_observer(public_decision)
+            research_labels.append(
+                ResearchDecisionLabels(
+                    index,
+                    actor,
+                    participant.participant_id,
+                    participant.profile.name,
+                    observation.hole_cards,
+                )
+            )
             game.step(action, actor)
         result = game.result
         if result is None:
@@ -192,6 +254,7 @@ class SimulationRunner:
                 seat,
                 stack,
                 self.config.big_blind,
+                tuple(observed_decisions),
             )
             for seat, player in enumerate(players)
         )
@@ -222,6 +285,8 @@ class SimulationRunner:
             result.winners,
             result.showdown,
             len(game.history),
+            tuple(observed_decisions),
+            tuple(research_labels),
             history,
         )
 
@@ -287,6 +352,7 @@ def _seat_stats(
     seat: int,
     starting: int,
     big_blind: int,
+    observed_decisions: tuple[ObservedDecision, ...],
 ) -> SeatHandStats:
     observation = game.observation_for(player)
     records = tuple(record for record in game.history if record.player_id == player)
@@ -302,7 +368,7 @@ def _seat_stats(
             ActionType.FOLD,
         }
     )
-    opportunities, three_bets = _three_bet_counts(game.history, player)
+    opportunities, three_bets = _three_bet_counts(observed_decisions, player)
     actions = tuple(
         record
         for record in records
@@ -341,18 +407,17 @@ def _seat_stats(
 
 
 def _three_bet_counts(
-    history: Iterable[ActionRecord], player: str
+    decisions: Iterable[ObservedDecision], player: str
 ) -> tuple[int, int]:
-    """Return opportunities and 3-bets before a second voluntary raise exists."""
-    raises_before = 0
-    opportunities = three_bets = 0
-    for record in history:
-        if record.street != Street.PREFLOP:
-            continue
-        if record.player_id == player and raises_before == 1:
-            opportunities += 1
-            if record.action_type == ActionType.RAISE:
-                three_bets += 1
-        if record.action_type == ActionType.RAISE:
-            raises_before += 1
-    return opportunities, three_bets
+    """Count only decisions where the first re-raise was actually legal."""
+    opportunities = tuple(
+        decision
+        for decision in decisions
+        if decision.player_id == player
+        and decision.street == Street.PREFLOP
+        and decision.prior_voluntary_raises == 1
+        and decision.can_raise
+    )
+    return len(opportunities), sum(
+        decision.action_family == "raise" for decision in opportunities
+    )

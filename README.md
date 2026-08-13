@@ -107,6 +107,11 @@ Synthetic agents and experiments are documented in
 policies are not inferred opponent models and are not claims about real poker
 populations.
 
+Opponent Model v1 learns Bayesian public-action tendencies, maintains
+blocker-aware action-conditioned ranges, infers a probability mixture over the
+synthetic archetypes, and can feed inferred ranges into Poker Coach. See
+[`docs/OPPONENT_MODEL.md`](docs/OPPONENT_MODEL.md).
+
 ## No-Limit Hold'em engine
 
 The new engine never asks a player object to act and never silently repairs an
@@ -206,8 +211,9 @@ The recommended sequence is deliberately incremental:
    side-pot-aware passive baselines, explanations, and sampling uncertainty.
 5. **Parameterized synthetic personalities and simulation — done:** traced
    heuristic agents, independent-hand evaluation, cross-play, sweeps, and metrics.
-6. **Bayesian and learned opponent modeling**, always compared with simple
-   population and logistic baselines.
+6. **Opponent Model v1 — done:** public decision opportunities, Bayesian
+   tendencies, sequential range inference, synthetic-archetype mixtures,
+   holdout evaluation, and a bounded adaptive-policy baseline.
 7. **General CFR interface, Leduc, CFR+, and MCCFR.**
 8. **Hold'em abstraction and depth-limited subgame solving.**
 9. **Neural methods only where profiling and tabular baselines justify them.**
