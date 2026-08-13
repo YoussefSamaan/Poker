@@ -101,8 +101,8 @@ following posterior probability to the true synthetic archetype:
 |---|---:|---|
 | Nit | 32.7% | Nit |
 | TAG | 23.8% | Nit |
-| LAG | 27.2% | LAG |
-| Calling Station | 96.4% | Calling Station |
+| LAG | 27.3% | LAG |
+| Calling Station | 96.3% | Calling Station |
 | Maniac | 90.0% | Maniac |
 | Bluff Heavy | 11.9% | Nit |
 
@@ -111,7 +111,9 @@ not a performance claim. TAG/Nit and Bluff Heavy overlap heavily at this sample
 size. A 10-train/10-holdout smoke run produced adaptive mixture log loss 0.128
 for Nit, 0.289 for LAG, and 0.208 for Calling Station. Tiny holdouts are noisy.
 
-In a 50-training-hand, 200-physical-hand paired smoke comparison, the adaptive
-TAG shift versus Calling Station was +5.5 bb/100 with a paired 95% interval of
-[-5.28, 16.28]; versus Nit it was 0.0 bb/100. Neither result supports claiming a
-reliable improvement. Larger preregistered runs should use the provided utilities.
+In a 50-training-hand, 200-physical-hand paired smoke comparison, the bounded
+adaptive TAG and fixed TAG produced identical actions and 0.0 bb/100 differences
+against both Nit and Calling Station. The evidence was insufficient to activate
+a policy change in those particular seeded samples. This is a useful null result,
+not evidence of equivalence; larger preregistered runs should use the provided
+utilities.
