@@ -99,7 +99,7 @@ def calibration_experiment(
                 profile, hands, seed + profile_index * trials + trial
             )
             for checkpoint in sorted(value for value in checkpoints if value <= hands):
-                model = OpponentModel("observer", "villain")
+                model = OpponentModel("observer", "public_player_1")
                 for event in events:
                     if event.decision.hand_index < checkpoint:
                         model.observe(
@@ -169,15 +169,15 @@ def holdout_predictive_evaluation(
     events = _synthetic_events(
         true_profile, training_hands + holdout_hands, seed
     )
-    trained = OpponentModel("observer", "villain")
+    trained = OpponentModel("observer", "public_player_1")
     for event in events:
         if event.decision.hand_index < training_hands:
             trained.observe(event.decision, observer_context=event.observer_context)
     frozen_adaptive = OpponentModel.from_json(trained.to_json())
     prequential = OpponentModel.from_json(trained.to_json())
-    uniform = OpponentModel("observer", "villain")
+    uniform = OpponentModel("observer", "public_player_1")
     fixed_tag = OpponentModel(
-        "observer", "villain", archetypes={"tag": PRESETS["tag"]}
+        "observer", "public_player_1", archetypes={"tag": PRESETS["tag"]}
     )
     holdout = [
         event for event in events if event.decision.hand_index >= training_hands
@@ -233,7 +233,7 @@ def tendency_convergence_experiment(
     seed: int = 0,
 ) -> tuple[TendencyConvergenceRow, ...]:
     events = _synthetic_events(true_profile, reference_hands, seed)
-    reference = OpponentModel("observer", "villain")
+    reference = OpponentModel("observer", "public_player_1")
     for event in events:
         reference.observe(event.decision, observer_context=event.observer_context)
     reference_estimate = reference.stats.estimate(tendency)
@@ -246,7 +246,7 @@ def tendency_convergence_experiment(
     for checkpoint in checkpoints:
         if checkpoint > reference_hands:
             continue
-        model = OpponentModel("observer", "villain")
+        model = OpponentModel("observer", "public_player_1")
         for event in events:
             if event.decision.hand_index < checkpoint:
                 model.observe(event.decision, observer_context=event.observer_context)
@@ -274,7 +274,7 @@ def adaptive_vs_fixed_experiment(
 ) -> AdaptivePerformanceResult:
     if evaluation_hands % 2:
         raise ValueError("adaptive paired evaluation needs an even hand count")
-    training_model = OpponentModel("hero", "villain")
+    training_model = OpponentModel("hero", "public_player_1")
     for event in _synthetic_events(
         opponent, training_hands, seed, observer_id="hero"
     ):
@@ -366,7 +366,7 @@ def _adaptive_run(
         return PersonalityAgent(participant.profile, seed + hand * 2 + seat)
 
     def observer(decision, private_context):
-        if online and decision.participant_id == "villain":
+        if online and decision.public_subject_id == "public_player_1":
             model.observe(decision, observer_context=private_context)
 
     return SimulationRunner(
@@ -374,16 +374,20 @@ def _adaptive_run(
         policy_factory=factory,
         decision_observer=observer,
         observer_participant_id="hero",
+        defer_observer_by_duplicate_block=online,
     ).run()
 
 
 def _reset_each_hand_run(config: SimulationConfig, seed: int):
-    holder = {"hand": None, "model": OpponentModel("hero", "villain")}
+    holder = {
+        "hand": None,
+        "model": OpponentModel("hero", "public_player_1"),
+    }
 
     def factory(participant: Participant, hand: int, seat: int):
         if holder["hand"] != hand:
             holder["hand"] = hand
-            holder["model"] = OpponentModel("hero", "villain")
+            holder["model"] = OpponentModel("hero", "public_player_1")
         if participant.participant_id == "hero":
             return AdaptiveExploitPolicy(
                 participant.profile,
@@ -393,7 +397,7 @@ def _reset_each_hand_run(config: SimulationConfig, seed: int):
         return PersonalityAgent(participant.profile, seed + hand * 2 + seat)
 
     def observer(decision, private_context):
-        if decision.participant_id == "villain":
+        if decision.public_subject_id == "public_player_1":
             holder["model"].observe(
                 decision, observer_context=private_context
             )
@@ -403,6 +407,7 @@ def _reset_each_hand_run(config: SimulationConfig, seed: int):
         policy_factory=factory,
         decision_observer=observer,
         observer_participant_id="hero",
+        defer_observer_by_duplicate_block=True,
     ).run()
 
 
@@ -418,7 +423,7 @@ def _synthetic_events(
     events = []
 
     def collect(decision, private_context):
-        if decision.participant_id == "villain":
+        if decision.public_subject_id == "public_player_1":
             events.append(_SyntheticEvent(decision, private_context))
 
     SimulationRunner(

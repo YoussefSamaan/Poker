@@ -5,6 +5,7 @@ import unittest
 from poker_ai.agents import PRESETS, PersonalityAgent
 from poker_ai.cards import parse_cards
 from poker_ai.experiments import SimulationConfig, SimulationRunner
+from poker_ai.experiments.simulator import sweep_parameter
 from poker_ai.experiments.schedule import Participant, participants_from_profiles
 from poker_ai.experiments import run_crossplay
 from poker_ai.holdem import (
@@ -26,11 +27,14 @@ from poker_ai.opponents import (
     OpponentModel,
     OpponentModelTable,
     OpponentStats,
+    PublicObservationDataset,
     RangeBelief,
     ResearchDecisionLabels,
     observe_decision,
     observed_decisions_from_session,
     observer_context_from_session,
+    grouped_train_validation_test_split,
+    public_decision_features,
 )
 from poker_ai.opponents.validation import (
     adaptive_vs_fixed_experiment,
@@ -106,7 +110,7 @@ class OpportunityAndPrivacyTests(unittest.TestCase):
         captured = []
 
         def collect(observed, private_context):
-            if observed.participant_id == "villain":
+            if observed.public_subject_id == "public_player_1":
                 captured.append((observed, private_context))
 
         hero = Participant("hero", "Hero", PRESETS["tag"])
@@ -249,7 +253,12 @@ class RangeAndArchetypeTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             first.observe(
                 ResearchDecisionLabels(
-                    HandKey("research", 0), "Villain", "Villain", "Nit", ()
+                    HandKey("research", 0),
+                    "Villain",
+                    "public_player_1",
+                    "Villain",
+                    "Nit",
+                    (),
                 ),
                 observer_context=context(observed),
             )
@@ -309,6 +318,161 @@ class RangeAndArchetypeTests(unittest.TestCase):
             observed = decision(session=session)
             model.observe(observed, observer_context=context(observed))
         self.assertEqual(model.snapshot().hands_observed, 2)
+
+    def test_transient_hand_prior_prevents_double_count_and_branch_contamination(self):
+        model = OpponentModel("Hero", "Villain")
+        bet = decision(street=Street.FLOP, action="bet", to_call=0, can_bet=True)
+        private = context(bet)
+        historical = model.archetype_posterior
+        expected = model.start_hand(private)
+        expected.observe(bet)
+        model.observe_current_hand(bet, observer_context=private)
+        inferred = model.infer_range_for_hand((bet,), observer_context=private)
+        self.assertEqual(model.archetype_posterior, historical)
+        self.assertEqual(inferred.historical_archetype_prior, historical)
+        self.assertEqual(inferred.current_archetype_posterior, expected.archetype_weights)
+
+        checked = replace(bet, action_family="check")
+        branch = model.infer_range_for_hand((checked,), observer_context=private)
+        clean = OpponentModel("Hero", "Villain").infer_range_for_hand(
+            (checked,), observer_context=private
+        )
+        self.assertEqual(
+            branch.current_archetype_posterior,
+            clean.current_archetype_posterior,
+        )
+
+    def test_completed_hand_commit_is_exactly_once_and_active_ranges_are_bounded(self):
+        model = OpponentModel(
+            "Hero", "Villain", archetypes={"tag": PRESETS["tag"]}
+        )
+        observed = decision()
+        private = context(observed)
+        self.assertTrue(model.commit_hand((observed,), observer_context=private))
+        version = model.model_version
+        counts = dict(model.stats.counts)
+        self.assertFalse(model.commit_hand((observed,), observer_context=private))
+        self.assertEqual((model.model_version, model.stats.counts), (version, counts))
+        for hand in range(1_000):
+            model.begin_hand(
+                ObserverContext("Hero", HandKey("bounded", hand), parse_cards("As Ks"))
+            )
+        self.assertIsNotNone(model._active_hand)
+        self.assertFalse(hasattr(model, "_learning_hands"))
+
+    def test_serialization_retains_only_one_concrete_active_range(self):
+        model = OpponentModel("Hero", "Villain", archetypes={"tag": PRESETS["tag"]})
+        for hand in range(500):
+            private = ObserverContext("Hero", HandKey("archive", hand), ())
+            self.assertTrue(model.commit_hand((), observer_context=private))
+        model.begin_hand(ObserverContext("Hero", HandKey("active", 0), ()))
+        serialized = model.to_json()
+        self.assertNotIn("learning_hands", serialized)
+        self.assertLess(len(serialized), 250_000)
+        restored = OpponentModel.from_json(
+            serialized, archetypes={"tag": PRESETS["tag"]}
+        )
+        self.assertEqual(restored.to_json(), serialized)
+
+
+class PublicDatasetTests(unittest.TestCase):
+    def test_custom_identity_and_sweep_metadata_never_reach_public_dataset(self):
+        revealing = Participant(
+            "lag_bluff_72_percent", "Loose Aggressive Secret", PRESETS["lag"]
+        )
+        result = SimulationRunner(
+            SimulationConfig(
+                (PRESETS["tag"], PRESETS["lag"]),
+                hands=2,
+                participants=(
+                    Participant("hero_secret", "Hero Secret", PRESETS["tag"]),
+                    revealing,
+                ),
+                session_id="opaque-custom",
+            )
+        ).run()
+        public = result.public_observation_json()
+        research = result.research_json()
+        self.assertNotIn("lag_bluff_72_percent", public)
+        self.assertNotIn("Loose Aggressive Secret", public)
+        self.assertNotIn("participant_id", public)
+        self.assertIn("lag_bluff_72_percent", research)
+        swept = sweep_parameter(
+            PRESETS["tag"], "bluff_frequency", (0.123456,), (PRESETS["nit"],),
+            hands=2,
+        )[0][1]
+        self.assertNotIn("sweep_bluff_frequency_0.123456", swept.public_observation_json())
+
+    def test_feature_schema_is_public_only_and_grouped_split_is_leak_free(self):
+        result = SimulationRunner(
+            SimulationConfig(
+                (PRESETS["tag"], PRESETS["lag"]),
+                hands=8,
+                duplicate_deals=True,
+                session_id="dataset-test",
+            )
+        ).run()
+        dataset = PublicObservationDataset.from_experiment(result)
+        self.assertEqual(dataset.schema_version, 1)
+        self.assertEqual(
+            public_decision_features(result.records[0].observed_decisions[0]),
+            dataset.examples[0].features,
+        )
+        split = grouped_train_validation_test_split(
+            dataset.examples, validation_fraction=0.25, test_fraction=0.25, seed=8
+        )
+        groups = [
+            {row.correlation_group_id for row in values}
+            for values in (split.train, split.validation, split.test)
+        ]
+        self.assertTrue(groups[0].isdisjoint(groups[1]))
+        self.assertTrue(groups[0].isdisjoint(groups[2]))
+        self.assertTrue(groups[1].isdisjoint(groups[2]))
+        for values in (split.train, split.validation, split.test):
+            hands = {(row.dataset_session_id, row.hand_index) for row in values}
+            for hand in hands:
+                self.assertEqual(
+                    sum(
+                        row.dataset_session_id == hand[0] and row.hand_index == hand[1]
+                        for row in dataset.examples
+                    ),
+                    sum(
+                        row.dataset_session_id == hand[0] and row.hand_index == hand[1]
+                        for row in values
+                    ),
+                )
+
+    def test_duplicate_block_learning_is_deferred_until_all_legs_finish(self):
+        hero = Participant("hero", "Hero", PRESETS["tag"])
+        villain = Participant("villain", "Villain", PRESETS["lag"])
+        model = OpponentModel("hero", "public_player_1")
+        versions = []
+
+        def factory(participant, hand, seat):
+            if participant.participant_id == "hero":
+                versions.append((hand, model.model_version))
+            return PersonalityAgent(participant.profile, hand * 2 + seat)
+
+        def collect(observed, private_context):
+            if observed.public_subject_id == "public_player_1":
+                model.observe(observed, observer_context=private_context)
+
+        SimulationRunner(
+            SimulationConfig(
+                (hero.profile, villain.profile),
+                hands=4,
+                duplicate_deals=True,
+                participants=(hero, villain),
+                session_id="block-sync",
+            ),
+            policy_factory=factory,
+            decision_observer=collect,
+            observer_participant_id="hero",
+            defer_observer_by_duplicate_block=True,
+        ).run()
+        self.assertEqual(versions[0][1], versions[1][1])
+        self.assertGreater(versions[2][1], versions[1][1])
+        self.assertEqual(versions[2][1], versions[3][1])
 
 
 class AdaptiveAndEndToEndTests(unittest.TestCase):

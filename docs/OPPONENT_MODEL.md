@@ -1,4 +1,4 @@
-# Opponent Model v1.1
+# Opponent Model v1.2
 
 This is an offline, transparent statistical baseline. Synthetic personalities
 generate behavior; opponent models consume public actions and infer uncertain
@@ -16,8 +16,9 @@ The three information layers are separate types:
 - `ResearchDecisionLabels` contains synthetic ground truth for explicit
   privileged validation exports.
 
-Automatically generated subject IDs are opaque (`participant_0`,
-`participant_1`) and are no longer derived from profile names. `HandKey` combines
+Simulator-owned public subject IDs are opaque (`public_player_0`,
+`public_player_1`) and are independent even from custom research participant
+names. `HandKey` combines
 an opaque session ID with a local hand index. Training sessions receive a
 persistent UUID; branches preserve it, while unrelated sessions get different
 IDs even if both begin at hand zero.
@@ -36,6 +37,28 @@ includes synthetic ground truth.
 - model version and observation count;
 - deduplication and in-progress learning state needed for serialization.
 
+### Explicit hand lifecycle
+
+Milestone 6.2 adds `begin_hand`, `observe_current_hand`, `current_hand_range`,
+`commit_hand`, and `finish_hand`. The sole `HandModelState` snapshots the
+historical model version and archetype posterior before the first active-hand
+action. Transient analysis conditions that frozen prior exactly once. Updating
+the long-term model during online play therefore cannot cause the same action to
+be applied again when the range is reconstructed.
+
+`commit_hand` is the only TrainingSession path into persistent history and is
+deduplicated by `HandKey`. Scenario edits, undo, and branches remain hypothetical
+until explicitly committed after the game is terminal. Every branch replays its
+visible actions from the same hand-start prior.
+
+Only one concrete `OpponentHandBelief` may be active. Finishing or beginning a
+different hand evicts its per-archetype 1,326-combo distributions. Completed
+history retains Bayesian counts, log posterior, and compact hand commit markers;
+it never retains historical ranges or per-decision dedup records. Memory is
+O(sufficient statistics + archetypes + compact hand keys + one active range),
+rather than O(hands × archetypes × combos). Schema version 3 serializes at most
+that one active concrete belief.
+
 It has no ambiguous `inferred_range()` method. A range exists only through an
 `OpponentHandBelief`, created with a specific `HandKey` and `ObserverContext`, or
 through the non-mutating API:
@@ -48,8 +71,10 @@ inference = model.infer_range_for_hand(
 ```
 
 The returned `HandRangeInference` records the hand key, observer blockers,
-conditioned action families, weighted range, entropy, effective size, top
-classes, and 13×13 matrix. It cannot accept decisions from another hand.
+historical model version, historical hand-start archetype prior, current
+within-hand posterior, conditioned action families, weighted range, entropy,
+effective size, top classes, and 13×13 matrix. It cannot accept decisions from
+another hand.
 
 Every new hand starts from the historical archetype posterior but a fresh
 1,326-combo prior. Hero's current cards and the currently revealed board are
@@ -124,6 +149,47 @@ from Hero's correct physical seat in each duplicate leg; Villain cards are never
 sent. Paired block-level differences and intervals compare persistent/reset
 policies with fixed TAG. No policy is called superior when its interval contains
 zero.
+
+Online duplicate evaluation is block-synchronous. Every leg in a duplicate
+block runs before any observation from that block reaches historical learning.
+Buffered observations are committed after the final leg, so an artificial
+replay cannot teach a later leg about the same latent deal. Compared systems use
+common deal, seat-assignment, and baseline policy RNG streams; only adaptive
+state may introduce divergence.
+
+## ML-safe public dataset
+
+Simulator participants and public subjects are separate identities. Custom
+participant names—even sweep IDs containing parameter names and values—remain
+privileged. Public rows receive simulator-owned `public_player_N` subjects and
+an opaque hashed dataset session ID.
+
+`PublicObservationDataset` schema version 1 contains `PublicDecisionExample`
+rows with safe split keys (`dataset_session_id`, `hand_index`,
+`decision_sequence`, `public_subject_id`, and `correlation_group_id`), public
+features, and the chosen action-family target. `OpponentFeatureVector` is a pure
+function of `ObservedDecision`. It includes street/position, player count,
+blind-normalized pot/call/effective-stack values, pot odds, stack-to-pot ratio,
+the legal-action mask, preflop raises, previous-aggressor relationship, board
+texture, and public history counts. It contains no private cards, profile labels,
+research participant identity, traces, policy state, or generating parameters.
+
+`grouped_train_validation_test_split` deterministically splits correlation
+groups. Duplicate legs share one group; ordinary hands receive one group each.
+Decisions from one hand must remain in the same data split.
+
+## Milestone 6.2 development benchmark
+
+`python3 benchmarks/opponent_model_lifecycle.py` separates state-lifecycle scale
+from expensive action-likelihood throughput. On the development machine, compact
+commit-marker state at 100/1,000/10,000 synthetic hand keys used approximately
+13 KB/117 KB/1.38 MB of traced live memory and serialized to 5 KB/48 KB/489 KB.
+No historical concrete ranges were retained. A separate 100-action,
+single-archetype likelihood benchmark processed about 3.3 updates/s and 3.0
+current-hand inferences/s; public feature extraction processed about 17.0k
+decisions/s. Serialization processed about 6.8k rows/s and produced an 878 KB
+JSON file for 1,000 examples. These are diagnostic Python baselines, not
+production guarantees.
 
 `AdaptiveExploitPolicy` remains deliberately small. On postflop AIR states it
 shifts aggression according to fold-versus-bet minus call-versus-bet, capped at

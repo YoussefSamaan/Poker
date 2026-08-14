@@ -278,7 +278,9 @@ def _render_analysis(st: Any, session: TrainingSession) -> None:
     )
     model_map = st.session_state.get("opponent_models", {})
     model_available = all(
-        opponent in model_map and model_map[opponent].observer_id == actor
+        opponent in model_map
+        and model_map[opponent].observer_id == actor
+        and model_map[opponent].opponent_id == opponent
         for opponent in context.opponent_ids
     )
     range_source = st.radio(
@@ -370,11 +372,29 @@ def _render_analysis(st: Any, session: TrainingSession) -> None:
                     inference = inferences[opponent]
                     st.write(
                         f"{opponent}: {snapshot.hands_observed} historical hands. "
-                        f"Current-hand actions: "
-                        f"{', '.join(inference.conditioned_actions) or 'none'}; "
-                        f"observer blockers: {len(inference.observer_known_cards)}; "
-                        f"range effective size "
-                        f"{inference.summary.effective_combo_count:.1f}."
+                        f"Historical model version: "
+                        f"{inference.historical_model_version_used}. Current hand: "
+                        f"{len(inference.conditioned_actions)} observed Villain actions; "
+                        f"observer blockers: {len(inference.observer_known_cards) + len(context.board)}; "
+                        f"range effective size {inference.summary.effective_combo_count:.1f}."
+                    )
+                    st.caption(
+                        "Historical prior: "
+                        + ", ".join(
+                            f"{name} {value:.1%}"
+                            for name, value in sorted(
+                                inference.historical_archetype_prior.items()
+                            )
+                        )
+                    )
+                    st.caption(
+                        "Current hand posterior: "
+                        + ", ".join(
+                            f"{name} {value:.1%}"
+                            for name, value in sorted(
+                                inference.current_archetype_posterior.items()
+                            )
+                        )
                     )
             for opponent, parsed in parsed_preflop.items():
                 stats = parsed.stats(dead)
@@ -761,7 +781,7 @@ def _render_opponent_model_lab(st: Any) -> None:
         events = []
 
         def collect(decision, private_context):
-            if decision.participant_id == target_id:
+            if decision.public_subject_id == "public_player_1":
                 events.append((decision, private_context))
 
         SimulationRunner(
@@ -775,12 +795,12 @@ def _render_opponent_model_lab(st: Any) -> None:
             decision_observer=collect,
             observer_participant_id="P1",
         ).run()
-        model = OpponentModel("P1", target_id)
+        model = OpponentModel("P1", "public_player_1")
         for decision, private_context in events:
             model.observe(decision, observer_context=private_context)
         st.session_state.setdefault("opponent_models", {})[target_id] = model
     st.divider()
-    st.write("**Current TrainingSession ingestion**")
+    st.write("**Current TrainingSession lifecycle**")
     session = st.session_state.get("training_session")
     if session is not None:
         hero = next(
@@ -788,7 +808,11 @@ def _render_opponent_model_lab(st: Any) -> None:
             for player_id in session.config.player_ids
             if session.controls[player_id].value == "human"
         )
-        if st.button("Use current TrainingSession observations"):
+        st.caption(
+            "Hypothetical / uncommitted. Analysis changes only the transient range; "
+            "historical learning requires an explicit completed-hand commit."
+        )
+        if st.button("Analyze current hand"):
             decisions = observed_decisions_from_session(session)
             private_context = observer_context_from_session(session, hero)
             models = st.session_state.setdefault("opponent_models", {})
@@ -796,13 +820,47 @@ def _render_opponent_model_lab(st: Any) -> None:
                 if opponent == hero:
                     continue
                 model = models.get(opponent)
-                if model is None or model.observer_id != hero:
+                if (
+                    model is None
+                    or model.observer_id != hero
+                    or model.opponent_id != opponent
+                ):
                     model = OpponentModel(hero, opponent)
                     models[opponent] = model
                 for observed in decisions:
-                    model.observe(observed, observer_context=private_context)
+                    model.observe_current_hand(
+                        observed, observer_context=private_context
+                    )
             st.success(
-                f"Ingested public actions through timeline position {session.position}."
+                f"Analyzed visible actions through timeline position {session.position}; "
+                "historical statistics were not changed."
+            )
+        if st.button(
+            "Commit completed hand to history",
+            disabled=not session.game.is_terminal,
+        ):
+            decisions = observed_decisions_from_session(session)
+            private_context = observer_context_from_session(session, hero)
+            models = st.session_state.setdefault("opponent_models", {})
+            committed = 0
+            for opponent in session.config.player_ids:
+                if opponent == hero:
+                    continue
+                model = models.get(opponent)
+                if (
+                    model is None
+                    or model.observer_id != hero
+                    or model.opponent_id != opponent
+                ):
+                    model = OpponentModel(hero, opponent)
+                    models[opponent] = model
+                committed += model.commit_hand(
+                    decisions, observer_context=private_context
+                )
+            st.success(
+                "Completed hand committed exactly once."
+                if committed
+                else "This completed hand was already committed."
             )
     model = st.session_state.get("opponent_models", {}).get(target_id)
     if model is None:

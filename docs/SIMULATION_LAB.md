@@ -3,9 +3,10 @@
 `SimulationRunner` evaluates 2–6 synthetic personality policies using reset
 cash-game hands. Every hand resets all seats to the configured stack, so an early
 bust-out cannot remove a strategy from later evaluation. A `Participant` supplies
-a stable experiment ID, display label, and profile. Automatically created public
-IDs are opaque (`participant_0`, `participant_1`) rather than profile-derived.
-Results aggregate by that ID, not by the profile's display name. Privileged
+a stable experiment ID, display label, and profile. Simulator-owned observation
+subjects are opaque (`public_player_0`, `public_player_1`) and independent even
+from custom participant IDs. Results aggregate by research participant ID.
+Privileged
 research metadata includes a compact SHA-256 fingerprint of the serialized
 profile; the public observation export excludes it.
 
@@ -34,6 +35,12 @@ participant IDs/fingerprints, and the complete button schedule.
 Use `public_observation_json()` for a public-only modeling dataset. Use
 `research_json()` only when synthetic profile labels and true hole cards are
 explicitly required for offline validation.
+
+The public export is a versioned `PublicObservationDataset`; parameter-sweep
+names and values cannot enter through identity fields. Rows carry an opaque
+correlation group. Use `grouped_train_validation_test_split` rather than randomly
+splitting decisions: every decision from one hand, and every duplicate leg that
+shares a latent deal, must stay in one partition.
 
 ## Metrics
 

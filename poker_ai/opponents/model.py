@@ -42,6 +42,9 @@ class OpponentSnapshot:
 @dataclass(frozen=True, slots=True)
 class HandRangeInference:
     hand_key: HandKey
+    historical_model_version_used: int
+    historical_archetype_prior: Mapping[str, float]
+    current_archetype_posterior: Mapping[str, float]
     observer_known_cards: tuple[Card, ...]
     conditioned_actions: tuple[str, ...]
     weighted_range: WeightedRange
@@ -252,12 +255,15 @@ class OpponentHandBelief:
         archetypes: Mapping[str, StrategyProfile],
         archetype_posterior: Mapping[str, float],
         *,
+        historical_model_version: int = 0,
         update_archetype_weights: bool = True,
     ) -> None:
         self.hand_key = hand_key
         self.observer_known_cards = tuple(observer_known_cards)
         self.archetypes = dict(archetypes)
         self.archetype_weights = dict(archetype_posterior)
+        self.historical_archetype_prior = dict(archetype_posterior)
+        self.historical_model_version = historical_model_version
         self.beliefs = {
             name: RangeBelief(known_cards=self.observer_known_cards)
             for name in self.archetypes
@@ -304,6 +310,9 @@ class OpponentHandBelief:
         weighted = self.weighted_range()
         return HandRangeInference(
             self.hand_key,
+            self.historical_model_version,
+            dict(self.historical_archetype_prior),
+            dict(self.archetype_weights),
             self.observer_known_cards,
             tuple(self.conditioned_actions),
             weighted,
@@ -318,8 +327,18 @@ class OpponentHandBelief:
             raise ValueError("decision belongs to a different hand belief")
 
 
+@dataclass(slots=True)
+class HandModelState:
+    hand_key: HandKey
+    historical_model_version: int
+    historical_archetype_prior: dict[str, float]
+    observer_context: ObserverContext
+    hand_belief: OpponentHandBelief
+    seen_decisions: set[tuple[str, int]]
+
+
 class OpponentModel:
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(
         self,
@@ -350,8 +369,8 @@ class OpponentModel:
         self.stats = OpponentStats(alpha_prior, beta_prior)
         self.observation_count = 0
         self.model_version = 0
-        self._learning_hands: dict[HandKey, OpponentHandBelief] = {}
-        self._seen_decisions: set[tuple[HandKey, str, int]] = set()
+        self._active_hand: HandModelState | None = None
+        self._committed_hands: set[HandKey] = set()
 
     def observe(
         self, decision: ObservedDecision, *, observer_context: ObserverContext
@@ -364,21 +383,111 @@ class OpponentModel:
         ):
             return
         self._require_context(decision, observer_context)
-        decision_key = (decision.hand_key, decision.player_id, len(decision.history))
-        if decision_key in self._seen_decisions:
+        state = self.begin_hand(observer_context)
+        decision_key = (decision.player_id, len(decision.history))
+        if decision_key in state.seen_decisions:
             return
-        self._seen_decisions.add(decision_key)
-        belief = self._learning_hands.get(decision.hand_key)
-        if belief is None:
-            belief = self.start_hand(observer_context)
-            self._learning_hands[decision.hand_key] = belief
+        state.seen_decisions.add(decision_key)
         self.stats.observe(decision)
-        likelihoods = belief.observe(decision)
+        likelihoods = state.hand_belief.observe(decision)
         for name, evidence in likelihoods.items():
             self.log_posterior[name] += math.log(max(evidence, 1e-12))
         self._normalize_logs()
         self.observation_count += 1
         self.model_version += 1
+
+    def begin_hand(self, context: ObserverContext) -> HandModelState:
+        """Start or return the sole active hand from its uncontaminated prior."""
+        if self._active_hand is not None:
+            if self._active_hand.hand_key == context.hand_key:
+                if self._active_hand.observer_context != context:
+                    raise ValueError("active hand observer context changed")
+                return self._active_hand
+            self.finish_hand()
+        prior = self.archetype_posterior
+        belief = OpponentHandBelief(
+            context.hand_key,
+            context.observer_known_cards,
+            self.archetypes,
+            prior,
+            historical_model_version=self.model_version,
+        )
+        self._active_hand = HandModelState(
+            context.hand_key,
+            self.model_version,
+            prior,
+            context,
+            belief,
+            set(),
+        )
+        return self._active_hand
+
+    def observe_current_hand(
+        self, decision: ObservedDecision, *, observer_context: ObserverContext
+    ) -> None:
+        """Condition the transient range without changing historical statistics."""
+        self._require_context(decision, observer_context)
+        state = self.begin_hand(observer_context)
+        key = (decision.player_id, len(decision.history))
+        if key not in state.seen_decisions and self._is_opponent(decision):
+            state.hand_belief.observe(decision)
+            state.seen_decisions.add(key)
+
+    def current_hand_range(self) -> HandRangeInference:
+        if self._active_hand is None:
+            raise RuntimeError("no active opponent hand")
+        return self._active_hand.hand_belief.inference()
+
+    def finish_hand(self) -> None:
+        """Evict all concrete range state for the active hand."""
+        self._active_hand = None
+
+    def commit_hand(
+        self,
+        decisions: Iterable[ObservedDecision],
+        *,
+        observer_context: ObserverContext,
+    ) -> bool:
+        """Commit one completed hand exactly once and retain only compact history."""
+        decisions = tuple(decisions)
+        if observer_context.hand_key in self._committed_hands:
+            return False
+        self._require_inference_context(observer_context)
+        opponent_decisions = tuple(
+            decision for decision in decisions if self._is_opponent(decision)
+        )
+        if not opponent_decisions:
+            self._committed_hands.add(observer_context.hand_key)
+            return True
+        prior = (
+            self._active_hand.historical_archetype_prior
+            if self._active_hand is not None
+            and self._active_hand.hand_key == observer_context.hand_key
+            else self.archetype_posterior
+        )
+        version = (
+            self._active_hand.historical_model_version
+            if self._active_hand is not None
+            and self._active_hand.hand_key == observer_context.hand_key
+            else self.model_version
+        )
+        belief = OpponentHandBelief(
+            observer_context.hand_key,
+            observer_context.observer_known_cards,
+            self.archetypes,
+            prior,
+            historical_model_version=version,
+        )
+        for decision in opponent_decisions:
+            self._require_context(decision, observer_context)
+            self.stats.observe(decision)
+            for name, evidence in belief.observe(decision).items():
+                self.log_posterior[name] += math.log(max(evidence, 1e-12))
+            self._normalize_logs()
+            self.observation_count += 1
+            self.model_version += 1
+        self._committed_hands.add(observer_context.hand_key)
+        return True
 
     def action_probability(
         self,
@@ -417,6 +526,7 @@ class OpponentModel:
             context.observer_known_cards,
             self.archetypes,
             self.archetype_posterior,
+            historical_model_version=self.model_version,
             update_archetype_weights=update_archetype_weights,
         )
 
@@ -426,12 +536,22 @@ class OpponentModel:
         *,
         observer_context: ObserverContext,
     ) -> HandRangeInference:
-        belief = self.start_hand(observer_context)
+        self._require_inference_context(observer_context)
+        if (
+            self._active_hand is not None
+            and self._active_hand.hand_key == observer_context.hand_key
+        ):
+            belief = OpponentHandBelief(
+                observer_context.hand_key,
+                observer_context.observer_known_cards,
+                self.archetypes,
+                self._active_hand.historical_archetype_prior,
+                historical_model_version=self._active_hand.historical_model_version,
+            )
+        else:
+            belief = self.start_hand(observer_context)
         for decision in decisions:
-            if (
-                decision.player_id == self.opponent_id
-                or decision.participant_id == self.opponent_id
-            ):
+            if self._is_opponent(decision):
                 belief.observe(decision)
         return belief.inference()
 
@@ -496,32 +616,10 @@ class OpponentModel:
             "log_posterior": self.log_posterior,
             "observation_count": self.observation_count,
             "model_version": self.model_version,
-            "seen_decisions": [
-                {
-                    "hand_key": _hand_key_dict(hand_key),
-                    "player_id": player_id,
-                    "sequence": sequence,
-                }
-                for hand_key, player_id, sequence in sorted(self._seen_decisions)
+            "committed_hands": [
+                _hand_key_dict(key) for key in sorted(self._committed_hands)
             ],
-            "learning_hands": [
-                {
-                    "hand_key": _hand_key_dict(hand_key),
-                    "observer_known_cards": [
-                        str(card) for card in belief.observer_known_cards
-                    ],
-                    "archetype_weights": belief.archetype_weights,
-                    "conditioned_actions": belief.conditioned_actions,
-                    "beliefs": {
-                        name: {
-                            "".join(map(str, cards)): weight
-                            for cards, weight in range_belief.weights.items()
-                        }
-                        for name, range_belief in belief.beliefs.items()
-                    },
-                }
-                for hand_key, belief in sorted(self._learning_hands.items())
-            ],
+            "active_hand": self._active_hand_payload(),
         }
         return json.dumps(payload, sort_keys=True)
 
@@ -554,24 +652,26 @@ class OpponentModel:
         model.log_posterior = payload["log_posterior"]
         model.observation_count = payload["observation_count"]
         model.model_version = payload["model_version"]
-        model._seen_decisions = {
-            (
-                _hand_key(value["hand_key"]),
-                value["player_id"],
-                value["sequence"],
-            )
-            for value in payload.get("seen_decisions", [])
+        model._committed_hands = {
+            _hand_key(value) for value in payload.get("committed_hands", [])
         }
-        model._learning_hands = {}
-        for value in payload.get("learning_hands", []):
+        value = payload.get("active_hand")
+        if value is not None:
             hand_key = _hand_key(value["hand_key"])
-            belief = OpponentHandBelief(
+            context = ObserverContext(
+                model.observer_id,
                 hand_key,
                 parse_cards(value["observer_known_cards"]),
+            )
+            belief = OpponentHandBelief(
+                hand_key,
+                context.observer_known_cards,
                 model.archetypes,
-                value["archetype_weights"],
+                value["historical_archetype_prior"],
+                historical_model_version=value["historical_model_version"],
             )
             belief.conditioned_actions = list(value["conditioned_actions"])
+            belief.archetype_weights = dict(value["current_archetype_posterior"])
             for name, weights in value["beliefs"].items():
                 belief.beliefs[name] = RangeBelief(
                     {
@@ -579,8 +679,50 @@ class OpponentModel:
                         for combo, weight in weights.items()
                     }
                 )
-            model._learning_hands[hand_key] = belief
+            model._active_hand = HandModelState(
+                hand_key,
+                value["historical_model_version"],
+                dict(value["historical_archetype_prior"]),
+                context,
+                belief,
+                {(item["player_id"], item["sequence"]) for item in value["seen_decisions"]},
+            )
         return model
+
+    def _active_hand_payload(self) -> dict[str, object] | None:
+        state = self._active_hand
+        if state is None:
+            return None
+        belief = state.hand_belief
+        return {
+            "hand_key": _hand_key_dict(state.hand_key),
+            "historical_model_version": state.historical_model_version,
+            "historical_archetype_prior": state.historical_archetype_prior,
+            "observer_known_cards": [str(card) for card in belief.observer_known_cards],
+            "current_archetype_posterior": belief.archetype_weights,
+            "conditioned_actions": belief.conditioned_actions,
+            "seen_decisions": [
+                {"player_id": player, "sequence": sequence}
+                for player, sequence in sorted(state.seen_decisions)
+            ],
+            "beliefs": {
+                name: {
+                    "".join(map(str, cards)): weight
+                    for cards, weight in range_belief.weights.items()
+                }
+                for name, range_belief in belief.beliefs.items()
+            },
+        }
+
+    def _is_opponent(self, decision: ObservedDecision) -> bool:
+        return (
+            decision.player_id == self.opponent_id
+            or decision.participant_id == self.opponent_id
+        )
+
+    def _require_inference_context(self, context: ObserverContext) -> None:
+        if context.observer_id != self.observer_id:
+            raise ValueError("observer context belongs to a different observer")
 
     def _require_context(
         self, decision: ObservedDecision, context: ObserverContext

@@ -44,7 +44,7 @@ class ObservedDecision:
 
     hand_key: HandKey
     player_id: str
-    participant_id: str
+    public_subject_id: str
     street: Street
     position: str
     board: tuple[Card, ...]
@@ -71,6 +71,11 @@ class ObservedDecision:
     @property
     def hand_index(self) -> int:
         return self.hand_key.hand_index
+
+    @property
+    def participant_id(self) -> str:
+        """Backward-compatible alias; the value is always an opaque public subject."""
+        return self.public_subject_id
 
     def legal_actions(self) -> LegalActions:
         player = next(item for item in self.players if item.player_id == self.player_id)
@@ -113,6 +118,7 @@ class ResearchDecisionLabels:
 
     hand_key: HandKey
     player_id: str
+    public_subject_id: str
     participant_id: str
     true_profile_name: str
     true_hole_cards: tuple[Card, ...]

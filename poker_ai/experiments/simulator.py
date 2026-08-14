@@ -24,6 +24,7 @@ from ..opponents.observation import (
     ResearchDecisionLabels,
     observe_decision,
 )
+from ..opponents.dataset import PublicObservationDataset
 from .metrics import StrategyMetrics, summarize_metrics
 from .records import HandExperimentRecord, SeatHandStats
 from .schedule import (
@@ -70,18 +71,7 @@ class ExperimentResult:
         )
 
     def public_observation_json(self, indent: int = 2) -> str:
-        payload = {
-            "schema_version": 1,
-            "dataset_type": "public_observed_decisions",
-            "decisions": [
-                asdict(decision)
-                for record in self.records
-                for decision in record.observed_decisions
-            ],
-        }
-        return json.dumps(
-            payload, indent=indent, sort_keys=True, default=_json_default
-        )
+        return PublicObservationDataset.from_experiment(self).to_json(indent)
 
     def metrics_csv(self) -> str:
         fields = tuple(asdict(self.metrics[0])) if self.metrics else ()
@@ -125,6 +115,7 @@ class SimulationRunner:
         policy_factory: PolicyFactory | None = None,
         decision_observer: DecisionObserver | None = None,
         observer_participant_id: str | None = None,
+        defer_observer_by_duplicate_block: bool = False,
     ) -> None:
         if not 2 <= len(config.profiles) <= 6 or config.hands < 1:
             raise ValueError("simulation requires 2–6 profiles and positive hands")
@@ -132,6 +123,10 @@ class SimulationRunner:
         self.policy_factory = policy_factory
         self.decision_observer = decision_observer
         self.observer_participant_id = observer_participant_id
+        self.defer_observer_by_duplicate_block = defer_observer_by_duplicate_block
+        self._deferred_observations: list[
+            tuple[ObservedDecision, ObserverContext]
+        ] = []
         self.participants = config.participants or participants_from_profiles(
             config.profiles
         )
@@ -150,10 +145,29 @@ class SimulationRunner:
             config.duplicate_deals,
             config.rotate_profiles,
         )
-        self.session_id = config.session_id
+        self.session_id = "session_" + hashlib.sha256(
+            ("public:" + config.session_id).encode()
+        ).hexdigest()[:16]
+        self.public_subject_ids = {
+            participant.participant_id: f"public_player_{index}"
+            for index, participant in enumerate(self.participants)
+        }
 
     def run(self) -> ExperimentResult:
-        records = tuple(self._run_hand(item) for item in self.schedule)
+        records_list = []
+        for index, item in enumerate(self.schedule):
+            records_list.append(self._run_hand(item))
+            next_block = (
+                self.schedule[index + 1].duplicate_block_id
+                if index + 1 < len(self.schedule)
+                else None
+            )
+            if (
+                self.defer_observer_by_duplicate_block
+                and next_block != item.duplicate_block_id
+            ):
+                self._flush_deferred_observations()
+        records = tuple(records_list)
         identities = tuple(
             participant.participant_id for participant in self.participants
         )
@@ -254,8 +268,9 @@ class SimulationRunner:
             legal = game.legal_actions(actor)
             action = agents[actor].decide(observation, legal)
             participant = assigned[players.index(actor)]
+            public_subject_id = self.public_subject_ids[participant.participant_id]
             public_decision = observe_decision(
-                hand_key, participant.participant_id, observation, legal, action
+                hand_key, public_subject_id, observation, legal, action
             )
             observed_decisions.append(public_decision)
             if self.decision_observer is not None:
@@ -270,11 +285,17 @@ class SimulationRunner:
                     hand_key,
                     game.observation_for(observer_player).hole_cards,
                 )
-                self.decision_observer(public_decision, private_context)
+                if self.defer_observer_by_duplicate_block:
+                    self._deferred_observations.append(
+                        (public_decision, private_context)
+                    )
+                else:
+                    self.decision_observer(public_decision, private_context)
             research_labels.append(
                 ResearchDecisionLabels(
                     hand_key,
                     actor,
+                    public_subject_id,
                     participant.participant_id,
                     participant.profile.name,
                     observation.hole_cards,
@@ -328,6 +349,13 @@ class SimulationRunner:
             tuple(research_labels),
             history,
         )
+
+    def _flush_deferred_observations(self) -> None:
+        if self.decision_observer is None:
+            return
+        for decision, context in self._deferred_observations:
+            self.decision_observer(decision, context)
+        self._deferred_observations.clear()
 
     @staticmethod
     def _seats(
