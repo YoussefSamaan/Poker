@@ -478,7 +478,9 @@ class PublicDatasetTests(unittest.TestCase):
 class AdaptiveAndEndToEndTests(unittest.TestCase):
     def _air_state(self):
         game = HoldemGame(TableConfig(("A", "B"), (100, 100), 1, 2, 0), seed=2)
-        game.start_hand(); game.step(Call()); game.step(Check())
+        game.start_hand()
+        game.step(Call())
+        game.step(Check())
         return game.observation_for(game.current_player), game.legal_actions(game.current_player)
 
     def test_adaptation_is_confidence_aware_bounded_and_legal(self):

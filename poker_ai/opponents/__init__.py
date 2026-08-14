@@ -18,6 +18,7 @@ from .dataset import (
 )
 from .model import (
     HandModelState,
+    HistoricalHandCheckpoint,
     HandRangeInference,
     OpponentModel,
     OpponentHandBelief,
@@ -33,6 +34,7 @@ __all__ = [
     "BetaEstimate",
     "HandKey",
     "HandModelState",
+    "HistoricalHandCheckpoint",
     "HandRangeInference",
     "AdaptationConfig",
     "AdaptiveExploitPolicy",

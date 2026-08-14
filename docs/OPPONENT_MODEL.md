@@ -56,8 +56,9 @@ different hand evicts its per-archetype 1,326-combo distributions. Completed
 history retains Bayesian counts, log posterior, and compact hand commit markers;
 it never retains historical ranges or per-decision dedup records. Memory is
 O(sufficient statistics + archetypes + compact hand keys + one active range),
-rather than O(hands × archetypes × combos). Schema version 3 serializes at most
-that one active concrete belief.
+rather than O(hands × archetypes × combos). Schema version 4 serializes at most
+that one active concrete belief plus compact per-hand archetype checkpoints for
+reproducible completed-hand replay.
 
 It has no ambiguous `inferred_range()` method. A range exists only through an
 `OpponentHandBelief`, created with a specific `HandKey` and `ObserverContext`, or
@@ -205,10 +206,11 @@ compares shorter-prefix posterior means/credible intervals; it never equates
 profile parameters directly with observed VPIP/PFR.
 
 The Opponent Model tab keeps synthetic-generator research mode visually separate
-from **Use current TrainingSession observations**. Current-session ingestion
-replays only the visible prefix, uses Hero cards only through `ObserverContext`,
-and never inspects Research View opponent cards. Model state uses schema version
-2 JSON and includes enough current learning state for a mid-hand round trip.
+from transient **Analyze current hand** and explicit **Commit completed hand to
+history** operations. Current-session analysis replays only the visible prefix,
+uses Hero cards only through `ObserverContext`, and never inspects Research View
+opponent cards. Model state uses schema version 4 JSON and includes enough active
+state for a mid-hand round trip plus compact historical hand-start checkpoints.
 
 ## Corrected development smoke results
 

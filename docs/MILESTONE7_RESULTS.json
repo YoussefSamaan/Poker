@@ -1,0 +1,94 @@
+{
+  "configuration": {
+    "hands_per_personality": 60,
+    "personalities": 6,
+    "physical_hands": 360,
+    "public_target_decisions": 217,
+    "sessions_per_personality": 2,
+    "seed": 701,
+    "held_out_decisions": 38,
+    "range_spots": 25,
+    "equity_spots": 8
+  },
+  "action_prediction": {
+    "frequency_baseline": {
+      "log_loss": 1.0979020222,
+      "accuracy": 0.6052631579,
+      "macro_f1": 0.2266666667,
+      "brier": 0.6081623592,
+      "ece": 0.1661697743
+    },
+    "context_logistic": {
+      "log_loss": 4.2226282276,
+      "accuracy": 0.6842105263,
+      "macro_f1": 0.4035014006,
+      "brier": 0.5624645327,
+      "ece": 0.1744992539
+    },
+    "history_logistic": {
+      "log_loss": 4.5195242430,
+      "accuracy": 0.6052631579,
+      "macro_f1": 0.2327044025,
+      "brier": 0.6757639600,
+      "ece": 0.2511978061
+    },
+    "bayesian_archetype": {
+      "log_loss": 0.6379453512,
+      "accuracy": 0.7368421053,
+      "macro_f1": 0.4614379085,
+      "brier": 0.3970088724,
+      "ece": 0.0896841735
+    },
+    "grouped_bootstrap_log_loss_differences": {
+      "context_minus_frequency": {
+        "estimate": 3.1247262054,
+        "ci95": [-0.0301904301, 5.8046404637]
+      },
+      "history_minus_context": {
+        "estimate": 0.2968960153,
+        "ci95": [-0.0205891807, 0.7651644675]
+      },
+      "history_minus_bayesian": {
+        "estimate": 3.8815788918,
+        "ci95": [-0.0199354931, 6.5973783630]
+      }
+    }
+  },
+  "range_inference": {
+    "archetype": {
+      "mean_true_combo_nll": 6.9048423365,
+      "mean_true_class_probability": 0.0088101254,
+      "mean_entropy": 6.9900402700
+    },
+    "learned_hand_conditioned": {
+      "mean_true_combo_nll": 7.3943629426,
+      "mean_true_class_probability": 0.0072934028,
+      "mean_entropy": 6.9120682233
+    }
+  },
+  "downstream_equity_error": {
+    "archetype": {"mae": 0.099125, "rmse": 0.1154225931},
+    "learned_hand_conditioned": {"mae": 0.11825, "rmse": 0.1374518097}
+  },
+  "parameterized_ood": {
+    "rows": 36,
+    "context_log_loss": 1.1530537077,
+    "history_log_loss": 1.6314825191
+  },
+  "runtime": {
+    "dataset_generation_seconds": 1.3064,
+    "context_training_seconds": 0.0072,
+    "hand_conditioned_training_seconds": 0.0119,
+    "context_prediction_decisions_per_second": 24959.6,
+    "learned_range_update_ms_per_action": 67.42,
+    "hand_conditioned_artifact_bytes": 11492
+  },
+  "decision_gate": {
+    "context_beats_frequency": false,
+    "history_beats_context": false,
+    "learned_beats_bayesian": false,
+    "learned_range_improves_true_hand_metrics": false,
+    "learned_range_improves_equity_error": false,
+    "interpretation": "No learned-model promotion. Small grouped holdout and wide bootstrap intervals require larger efficient experiments."
+  }
+}

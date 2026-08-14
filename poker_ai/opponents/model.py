@@ -337,8 +337,15 @@ class HandModelState:
     seen_decisions: set[tuple[str, int]]
 
 
+@dataclass(frozen=True, slots=True)
+class HistoricalHandCheckpoint:
+    hand_key: HandKey
+    historical_model_version: int
+    historical_archetype_prior: Mapping[str, float]
+
+
 class OpponentModel:
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
 
     def __init__(
         self,
@@ -371,6 +378,7 @@ class OpponentModel:
         self.model_version = 0
         self._active_hand: HandModelState | None = None
         self._committed_hands: set[HandKey] = set()
+        self._hand_checkpoints: dict[HandKey, HistoricalHandCheckpoint] = {}
 
     def observe(
         self, decision: ObservedDecision, *, observer_context: ObserverContext
@@ -379,7 +387,7 @@ class OpponentModel:
             raise TypeError("OpponentModel accepts public ObservedDecision records only")
         if (
             decision.player_id != self.opponent_id
-            and decision.participant_id != self.opponent_id
+            and decision.public_subject_id != self.opponent_id
         ):
             return
         self._require_context(decision, observer_context)
@@ -404,21 +412,35 @@ class OpponentModel:
                     raise ValueError("active hand observer context changed")
                 return self._active_hand
             self.finish_hand()
-        prior = self.archetype_posterior
+        checkpoint = self._hand_checkpoints.get(context.hand_key)
+        prior = (
+            dict(checkpoint.historical_archetype_prior)
+            if checkpoint is not None
+            else self.archetype_posterior
+        )
+        version = (
+            checkpoint.historical_model_version
+            if checkpoint is not None
+            else self.model_version
+        )
         belief = OpponentHandBelief(
             context.hand_key,
             context.observer_known_cards,
             self.archetypes,
             prior,
-            historical_model_version=self.model_version,
+            historical_model_version=version,
         )
         self._active_hand = HandModelState(
             context.hand_key,
-            self.model_version,
+            version,
             prior,
             context,
             belief,
             set(),
+        )
+        self._hand_checkpoints.setdefault(
+            context.hand_key,
+            HistoricalHandCheckpoint(context.hand_key, version, prior),
         )
         return self._active_hand
 
@@ -456,9 +478,6 @@ class OpponentModel:
         opponent_decisions = tuple(
             decision for decision in decisions if self._is_opponent(decision)
         )
-        if not opponent_decisions:
-            self._committed_hands.add(observer_context.hand_key)
-            return True
         prior = (
             self._active_hand.historical_archetype_prior
             if self._active_hand is not None
@@ -471,6 +490,15 @@ class OpponentModel:
             and self._active_hand.hand_key == observer_context.hand_key
             else self.model_version
         )
+        self._hand_checkpoints.setdefault(
+            observer_context.hand_key,
+            HistoricalHandCheckpoint(
+                observer_context.hand_key, version, dict(prior)
+            ),
+        )
+        if not opponent_decisions:
+            self._committed_hands.add(observer_context.hand_key)
+            return True
         belief = OpponentHandBelief(
             observer_context.hand_key,
             observer_context.observer_known_cards,
@@ -497,11 +525,27 @@ class OpponentModel:
         hand_belief: OpponentHandBelief | None = None,
     ) -> float:
         """Predict a public action without mutating model state."""
+        return max(
+            1e-12,
+            self.action_distribution(
+                decision,
+                observer_context=observer_context,
+                hand_belief=hand_belief,
+            ).get(decision.action_family, 0.0),
+        )
+
+    def action_distribution(
+        self,
+        decision: ObservedDecision,
+        *,
+        observer_context: ObserverContext,
+        hand_belief: OpponentHandBelief | None = None,
+    ) -> dict[str, float]:
+        """Predict every legal action in one combo-marginalization pass."""
         self._require_context(decision, observer_context)
         belief = hand_belief or self.start_hand(observer_context)
-        probability = 0.0
+        probabilities: dict[str, float] = {}
         for name, profile in self.archetypes.items():
-            evidence = 0.0
             agent = PersonalityAgent(profile)
             legal_prior = _normalized(
                 belief.beliefs[name].weights,
@@ -511,9 +555,17 @@ class OpponentModel:
                 distribution = agent.action_distribution(
                     decision.observation_with_hole_cards(cards), decision.legal_actions()
                 )
-                evidence += prior * distribution.get(decision.action_family, 0.0)
-            probability += belief.archetype_weights[name] * evidence
-        return max(1e-12, probability)
+                for action, probability in distribution.items():
+                    probabilities[action] = probabilities.get(action, 0.0) + (
+                        belief.archetype_weights[name] * prior * probability
+                    )
+        total = sum(probabilities.values())
+        if total <= 0:
+            raise ValueError("archetype model assigned no legal action mass")
+        return {
+            action: probability / total
+            for action, probability in probabilities.items()
+        }
 
     def start_hand(
         self,
@@ -549,7 +601,18 @@ class OpponentModel:
                 historical_model_version=self._active_hand.historical_model_version,
             )
         else:
-            belief = self.start_hand(observer_context)
+            checkpoint = self._hand_checkpoints.get(observer_context.hand_key)
+            belief = (
+                OpponentHandBelief(
+                    observer_context.hand_key,
+                    observer_context.observer_known_cards,
+                    self.archetypes,
+                    checkpoint.historical_archetype_prior,
+                    historical_model_version=checkpoint.historical_model_version,
+                )
+                if checkpoint is not None
+                else self.start_hand(observer_context)
+            )
         for decision in decisions:
             if self._is_opponent(decision):
                 belief.observe(decision)
@@ -619,6 +682,14 @@ class OpponentModel:
             "committed_hands": [
                 _hand_key_dict(key) for key in sorted(self._committed_hands)
             ],
+            "hand_checkpoints": [
+                {
+                    "hand_key": _hand_key_dict(key),
+                    "historical_model_version": value.historical_model_version,
+                    "historical_archetype_prior": value.historical_archetype_prior,
+                }
+                for key, value in sorted(self._hand_checkpoints.items())
+            ],
             "active_hand": self._active_hand_payload(),
         }
         return json.dumps(payload, sort_keys=True)
@@ -654,6 +725,17 @@ class OpponentModel:
         model.model_version = payload["model_version"]
         model._committed_hands = {
             _hand_key(value) for value in payload.get("committed_hands", [])
+        }
+        model._hand_checkpoints = {
+            checkpoint.hand_key: checkpoint
+            for value in payload.get("hand_checkpoints", [])
+            for checkpoint in (
+                HistoricalHandCheckpoint(
+                    _hand_key(value["hand_key"]),
+                    value["historical_model_version"],
+                    value["historical_archetype_prior"],
+                ),
+            )
         }
         value = payload.get("active_hand")
         if value is not None:
@@ -717,7 +799,7 @@ class OpponentModel:
     def _is_opponent(self, decision: ObservedDecision) -> bool:
         return (
             decision.player_id == self.opponent_id
-            or decision.participant_id == self.opponent_id
+            or decision.public_subject_id == self.opponent_id
         )
 
     def _require_inference_context(self, context: ObserverContext) -> None:
@@ -769,7 +851,7 @@ class OpponentModelTable:
                 for opponent in self.opponents
             }
         self.current_hand = decision.hand_key
-        model = self.models.get(decision.participant_id) or self.models.get(
+        model = self.models.get(decision.public_subject_id) or self.models.get(
             decision.player_id
         )
         if model is not None:

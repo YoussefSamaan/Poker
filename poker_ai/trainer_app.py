@@ -18,10 +18,25 @@ from poker_ai.agents import PRESETS
 from poker_ai.experiments import SimulationConfig, SimulationRunner
 from poker_ai.experiments.schedule import Participant
 from poker_ai.opponents import (
+    ObserverContext,
     OpponentModel,
     observed_decisions_from_session,
     observer_context_from_session,
 )
+from poker_ai.opponents.learned import (
+    ContextActionModel,
+    HandConditionedActionModel,
+    HistoryAwareActionModel,
+    LearnedRangeBelief,
+    LegalFrequencyBaseline,
+    causal_history_examples,
+    evaluate_action_predictions,
+    generate_balanced_synthetic_dataset,
+    history_features_from_stats,
+    load_trusted_local_artifact,
+)
+from poker_ai.opponents.model import OpponentStats
+from poker_ai.opponents.dataset import grouped_train_validation_test_split
 from poker_ai.ranges import PreflopRange, WeightedRange
 from poker_ai.training import (
     PolicyConfig,
@@ -283,13 +298,19 @@ def _render_analysis(st: Any, session: TrainingSession) -> None:
         and model_map[opponent].opponent_id == opponent
         for opponent in context.opponent_ids
     )
+    learned_model = st.session_state.get("learned_range_model")
+    learned_available = isinstance(learned_model, HandConditionedActionModel)
+    sources = ["Manual"]
+    if model_available:
+        sources.append("Opponent Model v1")
+    if learned_available:
+        sources.append("Learned Model v2")
     range_source = st.radio(
         "Range source",
-        ("Manual", "Opponent Model v1"),
+        tuple(sources),
         horizontal=True,
-        disabled=not model_available,
     )
-    if not model_available:
+    if not model_available and not learned_available:
         st.caption(
             "Build matching opponent models in the Opponent Model tab to enable "
             "inferred ranges."
@@ -347,6 +368,28 @@ def _render_analysis(st: Any, session: TrainingSession) -> None:
                     opponent: inference.weighted_range
                     for opponent, inference in inferences.items()
                 }
+            elif range_source == "Learned Model v2":
+                current_decisions = observed_decisions_from_session(session)
+                learned_beliefs = {}
+                for opponent in context.opponent_ids:
+                    historical_stats = (
+                        model_map[opponent].stats
+                        if opponent in model_map
+                        and model_map[opponent].observer_id == actor
+                        else OpponentStats()
+                    )
+                    history = history_features_from_stats(historical_stats)
+                    belief = LearnedRangeBelief(
+                        learned_model, known_cards=context.hero_cards
+                    )
+                    for observed in current_decisions:
+                        if observed.player_id == opponent:
+                            belief.update(observed, history)
+                    learned_beliefs[opponent] = belief
+                ranges = {
+                    opponent: belief.weighted_range()
+                    for opponent, belief in learned_beliefs.items()
+                }
             else:
                 for opponent, text in range_inputs.items():
                     if advanced:
@@ -395,6 +438,25 @@ def _render_analysis(st: Any, session: TrainingSession) -> None:
                                 inference.current_archetype_posterior.items()
                             )
                         )
+                    )
+            elif range_source == "Learned Model v2":
+                metadata = st.session_state.get("learned_range_metadata")
+                st.info(
+                    "Range source: Learned Opponent Model v2. Multinomial logistic "
+                    "hand-conditioned action likelihoods; Monte Carlo CI excludes "
+                    "model uncertainty."
+                )
+                if metadata is not None:
+                    st.write(
+                        f"Training dataset: {metadata.training_dataset_fingerprint[:12]}…; "
+                        f"training rows: {metadata.training_rows}; model type: "
+                        f"{metadata.model_type}."
+                    )
+                for opponent, belief in learned_beliefs.items():
+                    st.write(
+                        f"{opponent}: historical decisions represented by causal "
+                        f"tendency features; {len(belief.conditioned_actions)} current "
+                        "actions conditioned."
                     )
             for opponent, parsed in parsed_preflop.items():
                 stats = parsed.stats(dead)
@@ -626,8 +688,14 @@ def main() -> None:
             "application/json",
         )
 
-    trainer, builder_tab, simulation_tab, opponent_tab = st.tabs(
-        ("Trainer", "Scenario builder", "Simulation Lab", "Opponent Model")
+    trainer, builder_tab, simulation_tab, opponent_tab, ml_tab = st.tabs(
+        (
+            "Trainer",
+            "Scenario builder",
+            "Simulation Lab",
+            "Opponent Model",
+            "ML Evaluation",
+        )
     )
     with trainer:
         session = st.session_state.training_session
@@ -765,10 +833,30 @@ def main() -> None:
             )
     with opponent_tab:
         _render_opponent_model_lab(st)
+    with ml_tab:
+        _render_ml_evaluation(st)
 
 
 def _render_opponent_model_lab(st: Any) -> None:
     st.subheader("Opponent Model v1 — offline synthetic study")
+    st.write("**Trusted local Learned Model v2 artifact**")
+    artifact_path = st.text_input(
+        "Hand-conditioned artifact path", key="learned_artifact_path"
+    )
+    if st.button("Load trusted local learned artifact"):
+        try:
+            learned, metadata = load_trusted_local_artifact(artifact_path)
+            if not isinstance(learned, HandConditionedActionModel):
+                raise ValueError("Poker Coach requires a hand-conditioned artifact")
+            st.session_state.learned_range_model = learned
+            st.session_state.learned_range_metadata = metadata
+            st.success("Loaded Learned Opponent Model v2 for optional Coach use.")
+        except (OSError, ValueError, TypeError) as error:
+            st.error(str(error))
+    st.caption(
+        "Joblib/pickle artifacts can execute code. Load only artifacts generated "
+        "locally by this project and never arbitrary downloads."
+    )
     target_id = st.text_input("Opponent ID", "P2")
     profile_key = st.selectbox(
         "Synthetic generator used only for research validation", tuple(PRESETS)
@@ -896,6 +984,152 @@ def _render_opponent_model_lab(st: Any) -> None:
         "Historical model only. Open Poker Coach on a current hand to reconstruct "
         "an action-conditioned range with that hand's observer blockers."
     )
+
+
+def _render_ml_evaluation(st: Any) -> None:
+    st.subheader("Learned Opponent Model v2 — offline research")
+    st.caption(
+        "Training runs only when requested. Public subject IDs and targets never "
+        "enter the feature matrix."
+    )
+    hands = st.number_input("Hands per personality", 4, 5_000, 20, key="ml_hands")
+    sessions = st.number_input("Sessions per personality", 1, 20, 2, key="ml_sessions")
+    seed = st.number_input("ML seed", 0, 2**31 - 1, 42, key="ml_seed")
+    if st.button("Generate dataset and compare learned action models"):
+        bundle = generate_balanced_synthetic_dataset(
+            hands_per_personality=hands,
+            sessions_per_personality=sessions,
+            seed=seed,
+        )
+        split = grouped_train_validation_test_split(bundle.public_examples, seed=seed)
+        held = split.test or split.validation
+        baseline = LegalFrequencyBaseline().fit(split.train)
+        context_model = ContextActionModel(seed=seed).fit(split.train)
+        histories = tuple(
+            value
+            for value in causal_history_examples(bundle.results)
+            if value.public.public_subject_id == "public_player_1"
+        )
+        train_keys = {
+            (
+                value.dataset_session_id,
+                value.hand_index,
+                value.decision_sequence,
+                value.public_subject_id,
+            )
+            for value in split.train
+        }
+        held_keys = {
+            (
+                value.dataset_session_id,
+                value.hand_index,
+                value.decision_sequence,
+                value.public_subject_id,
+            )
+            for value in held
+        }
+        history_train = tuple(
+            value
+            for value in histories
+            if (
+                value.public.dataset_session_id,
+                value.public.hand_index,
+                value.public.decision_sequence,
+                value.public.public_subject_id,
+            )
+            in train_keys
+        )
+        history_held_map = {
+            (
+                value.public.dataset_session_id,
+                value.public.hand_index,
+                value.public.decision_sequence,
+                value.public.public_subject_id,
+            ): value
+            for value in histories
+            if (
+                value.public.dataset_session_id,
+                value.public.hand_index,
+                value.public.decision_sequence,
+                value.public.public_subject_id,
+            )
+            in held_keys
+        }
+        ordered_history = tuple(
+            history_held_map[
+                (
+                    value.dataset_session_id,
+                    value.hand_index,
+                    value.decision_sequence,
+                    value.public_subject_id,
+                )
+            ]
+            for value in held
+        )
+        history_model = HistoryAwareActionModel(seed=seed).fit(history_train)
+        models = (
+            ("Frequency baseline", baseline.predict_probabilities(held)),
+            ("Context logistic", context_model.predict_probabilities(held)),
+            (
+                "History-aware logistic",
+                history_model.predict_probabilities(ordered_history),
+            ),
+        )
+        rows = []
+        for name, probabilities in models:
+            metrics = evaluate_action_predictions(held, probabilities)
+            rows.append(
+                {
+                    "Model": name,
+                    "Rows": metrics.rows,
+                    "Log loss / NLL": metrics.log_loss,
+                    "Accuracy": metrics.accuracy,
+                    "Macro F1": metrics.macro_f1,
+                    "Brier": metrics.multiclass_brier,
+                    "ECE": metrics.expected_calibration_error,
+                }
+            )
+        st.session_state.ml_evaluation_rows = rows
+        first = held[0]
+        observed = next(
+            decision
+            for result in bundle.results
+            for record in result.records
+            for decision in record.observed_decisions
+            if decision.hand_key.session_id == first.dataset_session_id
+            and decision.hand_index == first.hand_index
+            and len(decision.history) == first.decision_sequence
+            and decision.public_subject_id == first.public_subject_id
+        )
+        bayesian_model = OpponentModel("ml_ui", first.public_subject_id)
+        bayesian_distribution = bayesian_model.action_distribution(
+            observed,
+            observer_context=ObserverContext("ml_ui", observed.hand_key, ()),
+        )
+        st.session_state.ml_prediction_example = {
+            "Observed action": held[0].chosen_action_family,
+            "Bayesian/archetype (uniform historical prior)": bayesian_distribution,
+            "Context logistic": dict(
+                zip(
+                    ("fold", "check", "call", "bet", "raise"),
+                    models[1][1][0],
+                )
+            ),
+            "History-aware logistic": dict(
+                zip(
+                    ("fold", "check", "call", "bet", "raise"),
+                    models[2][1][0],
+                )
+            ),
+        }
+    if "ml_evaluation_rows" in st.session_state:
+        st.dataframe(
+            st.session_state.ml_evaluation_rows,
+            hide_index=True,
+            use_container_width=True,
+        )
+        st.write("**Held-out action prediction example**")
+        st.json(st.session_state.ml_prediction_example)
 
 
 if __name__ == "__main__":

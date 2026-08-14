@@ -50,11 +50,50 @@ def _parser() -> argparse.ArgumentParser:
     crossplay.add_argument("--profiles", required=True)
     crossplay.add_argument("--hands-per-matchup", type=int, default=1_000)
     crossplay.add_argument("--seed", type=int, default=0)
+    learned = commands.add_parser(
+        "train-opponent-model", help="train a local learned opponent-model artifact"
+    )
+    learned.add_argument("--hands", type=int, default=5_000)
+    learned.add_argument("--sessions-per-profile", type=int, default=5)
+    learned.add_argument("--seed", type=int, default=42)
+    learned.add_argument("--model-type", choices=("context", "history", "hand"), default="history")
+    learned.add_argument("--output", required=True)
+    evaluate_learned = commands.add_parser(
+        "evaluate-opponent-model", help="evaluate a trusted local learned artifact"
+    )
+    evaluate_learned.add_argument("--model", required=True)
+    evaluate_learned.add_argument("--hands", type=int, default=1_000)
+    evaluate_learned.add_argument("--sessions-per-profile", type=int, default=2)
+    evaluate_learned.add_argument("--seed", type=int, default=84)
     return parser
 
 
 def main() -> None:
     args = _parser().parse_args()
+    if args.command in {"train-opponent-model", "evaluate-opponent-model"}:
+        from .opponents.learned.cli import (
+            evaluate_opponent_model,
+            train_opponent_model,
+        )
+
+        result = (
+            train_opponent_model(
+                hands=args.hands,
+                sessions_per_profile=args.sessions_per_profile,
+                seed=args.seed,
+                output=args.output,
+                model_type=args.model_type,
+            )
+            if args.command == "train-opponent-model"
+            else evaluate_opponent_model(
+                path=args.model,
+                hands=args.hands,
+                sessions_per_profile=args.sessions_per_profile,
+                seed=args.seed,
+            )
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
     if args.command == "train-kuhn":
         kuhn_result = KuhnCFR().train(args.iterations, args.seed)
         print(json.dumps(asdict(kuhn_result), indent=2, sort_keys=True))

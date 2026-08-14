@@ -32,6 +32,9 @@ live poker client and should not be used for real-time assistance.
 - Serializable synthetic personality profiles, explainable seeded agents, and an
   independent-hand population simulation lab with behavior, position, bb/100,
   uncertainty, duplicate deals, cross-play, sweeps, JSON/CSV, UI, and CLI access.
+- Versioned public ML datasets, causal opponent-history features, interpretable
+  sklearn logistic baselines, grouped/temporal evaluation, calibrated metrics,
+  trusted-local artifacts, and batched learned hidden-hand range updates.
 - Vanilla CFR implemented from scratch for Kuhn poker, checked against the
   known game value, and evaluated by exhaustive imperfect-information best
   responses (NashConv).
@@ -41,9 +44,10 @@ compatibility and historical context. New research code belongs in `poker_ai/`.
 
 ## Quick start
 
-No runtime dependencies are required for the research core.
+Install the package and its CPU scikit-learn dependency:
 
 ```bash
+python3 -m pip install -e .
 python3 -m unittest discover -s tests -v
 
 python3 -m poker_ai analyze \
@@ -111,6 +115,12 @@ Opponent Model v1 learns Bayesian public-action tendencies, maintains
 blocker-aware action-conditioned ranges, infers a probability mixture over the
 synthetic archetypes, and can feed inferred ranges into Poker Coach. See
 [`docs/OPPONENT_MODEL.md`](docs/OPPONENT_MODEL.md).
+
+Learned Opponent Model v2 provides context-only, causal-history, and privileged
+synthetic hand-conditioned logistic models without replacing v1. The current
+acceptance experiment is a negative/null result, so v1 remains the baseline. See
+[`docs/LEARNED_OPPONENT_MODEL.md`](docs/LEARNED_OPPONENT_MODEL.md) and the
+machine-readable [`docs/MILESTONE7_RESULTS.json`](docs/MILESTONE7_RESULTS.json).
 
 ## No-Limit Hold'em engine
 

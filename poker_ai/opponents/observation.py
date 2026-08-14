@@ -74,7 +74,7 @@ class ObservedDecision:
 
     @property
     def participant_id(self) -> str:
-        """Backward-compatible alias; the value is always an opaque public subject."""
+        """Deprecated alias for public_subject_id; never a research participant ID."""
         return self.public_subject_id
 
     def legal_actions(self) -> LegalActions:
@@ -126,7 +126,7 @@ class ResearchDecisionLabels:
 
 def observe_decision(
     hand_key: HandKey,
-    participant_id: str,
+    public_subject_id: str,
     observation: PlayerObservation,
     legal: LegalActions,
     action: Action,
@@ -148,7 +148,7 @@ def observe_decision(
     return ObservedDecision(
         hand_key,
         observation.player_id,
-        participant_id,
+        public_subject_id,
         observation.street,
         position_name(observation, observation.player_id),
         observation.board,
