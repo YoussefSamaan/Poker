@@ -33,16 +33,10 @@ class ScheduledHand:
 def participants_from_profiles(
     profiles: tuple[StrategyProfile, ...],
 ) -> tuple[Participant, ...]:
-    counts: dict[str, int] = {}
-    participants = []
-    for profile in profiles:
-        slug = profile.name.lower().replace(" ", "_")
-        counts[slug] = counts.get(slug, 0) + 1
-        suffix = f"_{counts[slug]}" if counts[slug] > 1 else ""
-        participants.append(
-            Participant(slug + suffix, profile.name + suffix.replace("_", " "), profile)
-        )
-    return tuple(participants)
+    return tuple(
+        Participant(f"participant_{index}", f"Player {index + 1}", profile)
+        for index, profile in enumerate(profiles)
+    )
 
 
 def build_schedule(

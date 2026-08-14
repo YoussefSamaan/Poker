@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 import json
 from typing import Any, Mapping
+import uuid
 
 from ..cards import Card, parse_cards
 from ..holdem import (
@@ -124,6 +125,7 @@ class TrainingSession:
         actions: tuple[TimelineAction, ...] = (),
         position: int | None = None,
         scenario_metadata: Mapping[str, Any] | None = None,
+        session_id: str | None = None,
     ) -> None:
         if seed is not None and preset_deck is not None:
             raise ValueError("use either seed or preset_deck, not both")
@@ -136,6 +138,7 @@ class TrainingSession:
         }
         self.policy_configs = dict(policy_configs or {})
         self.scenario_metadata = copy.deepcopy(dict(scenario_metadata or {}))
+        self.session_id = session_id or str(uuid.uuid4())
         self.actions: list[TimelineAction] = list(actions)
         self.position = len(self.actions) if position is None else position
         if not 0 <= self.position <= len(self.actions):
@@ -290,6 +293,7 @@ class TrainingSession:
             actions=tuple(self.actions[:position]),
             position=position,
             scenario_metadata=self.scenario_metadata,
+            session_id=self.session_id,
         )
         for player_id, policy in self._custom_policy_templates.items():
             branch.set_policy(player_id, copy.deepcopy(policy))
@@ -354,6 +358,7 @@ class TrainingSession:
             )
         return {
             "schema_version": SCHEMA_VERSION,
+            "session_id": self.session_id,
             "config": {
                 "player_ids": list(self.config.player_ids),
                 "starting_stacks": list(self.config.starting_stacks),
@@ -427,6 +432,7 @@ class TrainingSession:
             actions=actions,
             position=data.get("position"),
             scenario_metadata=data.get("scenario", {}),
+            session_id=data.get("session_id"),
         )
 
     @classmethod

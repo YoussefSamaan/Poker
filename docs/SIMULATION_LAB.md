@@ -3,9 +3,11 @@
 `SimulationRunner` evaluates 2–6 synthetic personality policies using reset
 cash-game hands. Every hand resets all seats to the configured stack, so an early
 bust-out cannot remove a strategy from later evaluation. A `Participant` supplies
-a stable experiment ID, display label, and profile. Results aggregate by that ID,
-not by the profile's display name, and metadata includes a deterministic compact
-SHA-256 fingerprint of the serialized profile.
+a stable experiment ID, display label, and profile. Automatically created public
+IDs are opaque (`participant_0`, `participant_1`) rather than profile-derived.
+Results aggregate by that ID, not by the profile's display name. Privileged
+research metadata includes a compact SHA-256 fingerprint of the serialized
+profile; the public observation export excludes it.
 
 In the ordinary schedule, the profile-to-seat assignment stays fixed during each
 N-hand block while the button visits every seat. The assignment rotates only
@@ -28,6 +30,10 @@ duplicate identifiers, per-seat net results and behavior counters, winners,
 showdown flag, and action count. Full histories are optional. JSON metadata also
 records schedule type, master seed, physical hands, independent duplicate blocks,
 participant IDs/fingerprints, and the complete button schedule.
+
+Use `public_observation_json()` for a public-only modeling dataset. Use
+`research_json()` only when synthetic profile labels and true hole cards are
+explicitly required for offline validation.
 
 ## Metrics
 

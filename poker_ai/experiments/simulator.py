@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 import hashlib
 import json
 from typing import Callable, Iterable, Protocol
+import uuid
 
 from ..agents import PersonalityAgent, StrategyProfile, position_name
 from ..holdem import (
@@ -17,7 +18,9 @@ from ..holdem import (
     TableConfig,
 )
 from ..opponents.observation import (
+    HandKey,
     ObservedDecision,
+    ObserverContext,
     ResearchDecisionLabels,
     observe_decision,
 )
@@ -43,6 +46,7 @@ class SimulationConfig:
     duplicate_deals: bool = False
     record_full_history: bool = False
     participants: tuple[Participant, ...] | None = None
+    session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,13 +58,29 @@ class ExperimentResult:
     metadata: dict[str, object]
 
     def to_json(self, indent: int = 2) -> str:
+        """Full privileged research export; use public_observation_json for ML data."""
+        return self.research_json(indent)
+
+    def research_json(self, indent: int = 2) -> str:
         return json.dumps(
             asdict(self),
             indent=indent,
             sort_keys=True,
-            default=lambda value: (
-                value.value if isinstance(value, Enum) else str(value)
-            ),
+            default=_json_default,
+        )
+
+    def public_observation_json(self, indent: int = 2) -> str:
+        payload = {
+            "schema_version": 1,
+            "dataset_type": "public_observed_decisions",
+            "decisions": [
+                asdict(decision)
+                for record in self.records
+                for decision in record.observed_decisions
+            ],
+        }
+        return json.dumps(
+            payload, indent=indent, sort_keys=True, default=_json_default
         )
 
     def metrics_csv(self) -> str:
@@ -92,7 +112,7 @@ class DecisionPolicy(Protocol):
 
 
 PolicyFactory = Callable[[Participant, int, int], DecisionPolicy]
-DecisionObserver = Callable[[ObservedDecision], None]
+DecisionObserver = Callable[[ObservedDecision, ObserverContext], None]
 
 
 class SimulationRunner:
@@ -104,12 +124,14 @@ class SimulationRunner:
         *,
         policy_factory: PolicyFactory | None = None,
         decision_observer: DecisionObserver | None = None,
+        observer_participant_id: str | None = None,
     ) -> None:
         if not 2 <= len(config.profiles) <= 6 or config.hands < 1:
             raise ValueError("simulation requires 2–6 profiles and positive hands")
         self.config = config
         self.policy_factory = policy_factory
         self.decision_observer = decision_observer
+        self.observer_participant_id = observer_participant_id
         self.participants = config.participants or participants_from_profiles(
             config.profiles
         )
@@ -118,12 +140,17 @@ class SimulationRunner:
         identities = tuple(item.participant_id for item in self.participants)
         if len(set(identities)) != len(identities):
             raise ValueError("participant IDs must be unique")
+        if decision_observer is not None and observer_participant_id not in identities:
+            raise ValueError(
+                "decision observers require a valid observer_participant_id"
+            )
         self.schedule = build_schedule(
             config.hands,
             len(config.profiles),
             config.duplicate_deals,
             config.rotate_profiles,
         )
+        self.session_id = config.session_id
 
     def run(self) -> ExperimentResult:
         records = tuple(self._run_hand(item) for item in self.schedule)
@@ -184,6 +211,7 @@ class SimulationRunner:
     def _run_hand(self, scheduled: ScheduledHand) -> HandExperimentRecord:
         count = len(self.config.profiles)
         index = scheduled.hand_index
+        hand_key = HandKey(self.session_id, index)
         assigned = tuple(
             self.participants[item] for item in scheduled.participant_indices_by_seat
         )
@@ -227,14 +255,25 @@ class SimulationRunner:
             action = agents[actor].decide(observation, legal)
             participant = assigned[players.index(actor)]
             public_decision = observe_decision(
-                index, participant.participant_id, observation, legal, action
+                hand_key, participant.participant_id, observation, legal, action
             )
             observed_decisions.append(public_decision)
             if self.decision_observer is not None:
-                self.decision_observer(public_decision)
+                observer_seat = next(
+                    seat
+                    for seat, item in enumerate(assigned)
+                    if item.participant_id == self.observer_participant_id
+                )
+                observer_player = players[observer_seat]
+                private_context = ObserverContext(
+                    self.observer_participant_id,
+                    hand_key,
+                    game.observation_for(observer_player).hole_cards,
+                )
+                self.decision_observer(public_decision, private_context)
             research_labels.append(
                 ResearchDecisionLabels(
-                    index,
+                    hand_key,
                     actor,
                     participant.participant_id,
                     participant.profile.name,
@@ -342,6 +381,10 @@ def sweep_parameter(
 def _seed(master: int, *parts: object) -> int:
     payload = ":".join(map(str, (master, *parts))).encode()
     return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "big")
+
+
+def _json_default(value: object) -> object:
+    return value.value if isinstance(value, Enum) else str(value)
 
 
 def _seat_stats(

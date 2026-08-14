@@ -19,11 +19,30 @@ from ..holdem import (
 )
 
 
+@dataclass(frozen=True, slots=True, order=True)
+class HandKey:
+    session_id: str
+    hand_index: int
+
+    def __post_init__(self) -> None:
+        if not self.session_id:
+            raise ValueError("hand session_id cannot be empty")
+        if self.hand_index < 0:
+            raise ValueError("hand index cannot be negative")
+
+
+@dataclass(frozen=True, slots=True)
+class ObserverContext:
+    observer_id: str
+    hand_key: HandKey
+    observer_known_cards: tuple[Card, ...]
+
+
 @dataclass(frozen=True, slots=True)
 class ObservedDecision:
     """Public information available immediately before and after one action."""
 
-    hand_index: int
+    hand_key: HandKey
     player_id: str
     participant_id: str
     street: Street
@@ -48,6 +67,10 @@ class ObservedDecision:
     action_family: str
     action_amount: int | None
     bet_fraction_of_pot: float | None
+
+    @property
+    def hand_index(self) -> int:
+        return self.hand_key.hand_index
 
     def legal_actions(self) -> LegalActions:
         player = next(item for item in self.players if item.player_id == self.player_id)
@@ -88,7 +111,7 @@ class ObservedDecision:
 class ResearchDecisionLabels:
     """Privileged synthetic-only labels, never accepted by opponent models."""
 
-    hand_index: int
+    hand_key: HandKey
     player_id: str
     participant_id: str
     true_profile_name: str
@@ -96,7 +119,7 @@ class ResearchDecisionLabels:
 
 
 def observe_decision(
-    hand_index: int,
+    hand_key: HandKey,
     participant_id: str,
     observation: PlayerObservation,
     legal: LegalActions,
@@ -117,7 +140,7 @@ def observe_decision(
         amount - actor.street_contribution if amount is not None else None
     )
     return ObservedDecision(
-        hand_index,
+        hand_key,
         observation.player_id,
         participant_id,
         observation.street,

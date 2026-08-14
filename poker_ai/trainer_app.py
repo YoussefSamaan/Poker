@@ -17,7 +17,11 @@ from poker_ai.holdem import (
 from poker_ai.agents import PRESETS
 from poker_ai.experiments import SimulationConfig, SimulationRunner
 from poker_ai.experiments.schedule import Participant
-from poker_ai.opponents import OpponentModel
+from poker_ai.opponents import (
+    OpponentModel,
+    observed_decisions_from_session,
+    observer_context_from_session,
+)
 from poker_ai.ranges import PreflopRange, WeightedRange
 from poker_ai.training import (
     PolicyConfig,
@@ -273,7 +277,10 @@ def _render_analysis(st: Any, session: TrainingSession) -> None:
         f"required equity {context.required_equity:.1%}."
     )
     model_map = st.session_state.get("opponent_models", {})
-    model_available = all(opponent in model_map for opponent in context.opponent_ids)
+    model_available = all(
+        opponent in model_map and model_map[opponent].observer_id == actor
+        for opponent in context.opponent_ids
+    )
     range_source = st.radio(
         "Range source",
         ("Manual", "Opponent Model v1"),
@@ -325,9 +332,18 @@ def _render_analysis(st: Any, session: TrainingSession) -> None:
             ranges = {}
             parsed_preflop = {}
             if range_source == "Opponent Model v1":
-                ranges = {
-                    opponent: model_map[opponent].inferred_range().without_blocked(dead)
+                current_decisions = observed_decisions_from_session(session)
+                observer_context = observer_context_from_session(session, actor)
+                inferences = {
+                    opponent: model_map[opponent].infer_range_for_hand(
+                        current_decisions,
+                        observer_context=observer_context,
+                    )
                     for opponent in context.opponent_ids
+                }
+                ranges = {
+                    opponent: inference.weighted_range
+                    for opponent, inference in inferences.items()
                 }
             else:
                 for opponent, text in range_inputs.items():
@@ -351,9 +367,14 @@ def _render_analysis(st: Any, session: TrainingSession) -> None:
                 )
                 for opponent in context.opponent_ids:
                     snapshot = model_map[opponent].snapshot()
+                    inference = inferences[opponent]
                     st.write(
-                        f"{opponent}: {snapshot.hands_observed} observed hands; "
-                        f"range entropy {snapshot.range_summary.entropy:.2f} nats."
+                        f"{opponent}: {snapshot.hands_observed} historical hands. "
+                        f"Current-hand actions: "
+                        f"{', '.join(inference.conditioned_actions) or 'none'}; "
+                        f"observer blockers: {len(inference.observer_known_cards)}; "
+                        f"range effective size "
+                        f"{inference.summary.effective_combo_count:.1f}."
                     )
             for opponent, parsed in parsed_preflop.items():
                 stats = parsed.stats(dead)
@@ -704,10 +725,17 @@ def main() -> None:
                 use_container_width=True,
             )
             st.download_button(
-                "Export experiment JSON",
-                result.to_json(),
-                "simulation.json",
+                "Export public observation dataset",
+                result.public_observation_json(),
+                "simulation-public-observations.json",
                 "application/json",
+            )
+            st.download_button(
+                "Export privileged research dataset",
+                result.research_json(),
+                "simulation-privileged-research.json",
+                "application/json",
+                help="Includes synthetic ground-truth profiles and hole cards.",
             )
             st.download_button(
                 "Export metrics CSV",
@@ -730,19 +758,52 @@ def _render_opponent_model_lab(st: Any) -> None:
     if st.button("Generate public observations and fit model"):
         observer = Participant("P1", "Observer", PRESETS["tag"])
         villain = Participant(target_id, "Unlabeled opponent", PRESETS[profile_key])
-        result = SimulationRunner(
+        events = []
+
+        def collect(decision, private_context):
+            if decision.participant_id == target_id:
+                events.append((decision, private_context))
+
+        SimulationRunner(
             SimulationConfig(
                 (observer.profile, villain.profile),
                 hands=hands,
                 master_seed=seed,
                 participants=(observer, villain),
-            )
+                session_id=f"trainer-synthetic-{seed}",
+            ),
+            decision_observer=collect,
+            observer_participant_id="P1",
         ).run()
         model = OpponentModel("P1", target_id)
-        for record in result.records:
-            for decision in record.observed_decisions:
-                model.observe(decision)
+        for decision, private_context in events:
+            model.observe(decision, observer_context=private_context)
         st.session_state.setdefault("opponent_models", {})[target_id] = model
+    st.divider()
+    st.write("**Current TrainingSession ingestion**")
+    session = st.session_state.get("training_session")
+    if session is not None:
+        hero = next(
+            player_id
+            for player_id in session.config.player_ids
+            if session.controls[player_id].value == "human"
+        )
+        if st.button("Use current TrainingSession observations"):
+            decisions = observed_decisions_from_session(session)
+            private_context = observer_context_from_session(session, hero)
+            models = st.session_state.setdefault("opponent_models", {})
+            for opponent in session.config.player_ids:
+                if opponent == hero:
+                    continue
+                model = models.get(opponent)
+                if model is None or model.observer_id != hero:
+                    model = OpponentModel(hero, opponent)
+                    models[opponent] = model
+                for observed in decisions:
+                    model.observe(observed, observer_context=private_context)
+            st.success(
+                f"Ingested public actions through timeline position {session.position}."
+            )
     model = st.session_state.get("opponent_models", {}).get(target_id)
     if model is None:
         st.caption("No fitted model for this opponent ID yet.")
@@ -773,24 +834,9 @@ def _render_opponent_model_lab(st: Any) -> None:
         hide_index=True,
         use_container_width=True,
     )
-    summary = snapshot.range_summary
     st.caption(
-        f"{summary.legal_combo_count} legal combos; entropy {summary.entropy:.2f}; "
-        f"effective combos exp(H)={summary.effective_combo_count:.1f}."
-    )
-    st.dataframe(
-        [
-            {
-                "Rank": rank,
-                **{
-                    column: row[index]
-                    for index, column in enumerate("AKQJT98765432")
-                },
-            }
-            for rank, row in zip("AKQJT98765432", summary.matrix)
-        ],
-        hide_index=True,
-        use_container_width=True,
+        "Historical model only. Open Poker Coach on a current hand to reconstruct "
+        "an action-conditioned range with that hand's observer blockers."
     )
 
 

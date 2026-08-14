@@ -16,7 +16,7 @@ class MatchupResult:
     duplicate_blocks: int
     a_bb_per_100: float
     b_bb_per_100: float
-    paired_difference_bb_per_100: float
+    a_paired_bb_per_100: float
     paired_standard_error_bb_per_100: float
     a_paired_ci_95: tuple[float, float]
     b_paired_ci_95: tuple[float, float]
