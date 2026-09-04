@@ -56,7 +56,17 @@ def _parser() -> argparse.ArgumentParser:
     learned.add_argument("--hands", type=int, default=5_000)
     learned.add_argument("--sessions-per-profile", type=int, default=5)
     learned.add_argument("--seed", type=int, default=42)
-    learned.add_argument("--model-type", choices=("context", "history", "hand"), default="history")
+    learned.add_argument(
+        "--model-type",
+        choices=(
+            "context",
+            "history",
+            "boosted-context",
+            "boosted-history",
+            "hand",
+        ),
+        default="history",
+    )
     learned.add_argument("--output", required=True)
     evaluate_learned = commands.add_parser(
         "evaluate-opponent-model", help="evaluate a trusted local learned artifact"

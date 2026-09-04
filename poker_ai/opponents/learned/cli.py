@@ -7,7 +7,12 @@ from pathlib import Path
 import numpy as np
 
 from ..dataset import grouped_train_validation_test_split
-from .action_model import ContextActionModel, HistoryAwareActionModel
+from .action_model import (
+    BoostedContextActionModel,
+    BoostedHistoryActionModel,
+    ContextActionModel,
+    HistoryAwareActionModel,
+)
 from .evaluation import evaluate_action_predictions
 from .generation import generate_balanced_synthetic_dataset
 from .hand_conditioned import HandConditionedActionModel
@@ -29,12 +34,15 @@ def train_opponent_model(
         seed=seed,
     )
     split = grouped_train_validation_test_split(bundle.public_examples, seed=seed)
-    if model_type == "context":
-        model = ContextActionModel(seed=seed).fit(split.train)
+    if model_type in {"context", "boosted-context"}:
+        model_class = (
+            ContextActionModel if model_type == "context" else BoostedContextActionModel
+        )
+        model = model_class(seed=seed).fit(split.train)
         held = split.validation or split.test
         probabilities = model.predict_probabilities(held)
         evaluation_examples = held
-    elif model_type == "history":
+    elif model_type in {"history", "boosted-history"}:
         histories = causal_history_examples(bundle.results)
         target = tuple(
             value
@@ -45,7 +53,12 @@ def train_opponent_model(
         held_keys = {_example_key(value) for value in (split.validation or split.test)}
         training = tuple(value for value in target if _example_key(value.public) in train_keys)
         held = tuple(value for value in target if _example_key(value.public) in held_keys)
-        model = HistoryAwareActionModel(seed=seed).fit(training)
+        model_class = (
+            HistoryAwareActionModel
+            if model_type == "history"
+            else BoostedHistoryActionModel
+        )
+        model = model_class(seed=seed).fit(training)
         probabilities = model.predict_probabilities(held)
         evaluation_examples = tuple(value.public for value in held)
     elif model_type == "hand":
@@ -72,7 +85,9 @@ def train_opponent_model(
         )
         evaluation_examples = tuple(value.public for value in held)
     else:
-        raise ValueError("model_type must be context, history, or hand")
+        raise ValueError(
+            "model_type must be context, history, boosted-context, boosted-history, or hand"
+        )
     metrics = evaluate_action_predictions(evaluation_examples, probabilities)
     dataset_payload = json.dumps(
         [asdict(value) for value in split.train], sort_keys=True
@@ -105,10 +120,16 @@ def evaluate_opponent_model(
         sessions_per_personality=sessions_per_profile,
         seed=seed,
     )
-    if model.MODEL_TYPE == ContextActionModel.MODEL_TYPE:
+    if model.MODEL_TYPE in {
+        ContextActionModel.MODEL_TYPE,
+        BoostedContextActionModel.MODEL_TYPE,
+    }:
         examples = bundle.public_examples
         probabilities = model.predict_probabilities(examples)
-    elif model.MODEL_TYPE == HistoryAwareActionModel.MODEL_TYPE:
+    elif model.MODEL_TYPE in {
+        HistoryAwareActionModel.MODEL_TYPE,
+        BoostedHistoryActionModel.MODEL_TYPE,
+    }:
         histories = causal_history_examples(bundle.results)
         rows = tuple(
             value

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Iterable, Mapping, Sequence
 
 import numpy as np
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 
@@ -159,9 +160,56 @@ class HistoryAwareActionModel(_LogisticActionModel):
         return legal_action_mask(probabilities, features)
 
 
+class _BoostedActionModel(_LogisticActionModel):
+    """Nonlinear CPU baseline using the same leak-free feature mappings."""
+
+    def _fit(
+        self, rows: Sequence[Mapping[str, object]], targets: Sequence[str]
+    ) -> _BoostedActionModel:
+        if len(rows) != len(targets) or len(rows) < 2:
+            raise ValueError("training requires matching rows and at least two examples")
+        if len(set(targets)) < 2:
+            raise ValueError("training requires at least two observed action classes")
+        self.feature_names = tuple(sorted(rows[0]))
+        self.pipeline = Pipeline(
+            (
+                ("preprocess", build_preprocessor(self.feature_names, dense=True)),
+                (
+                    "classifier",
+                    HistGradientBoostingClassifier(
+                        learning_rate=0.06,
+                        max_iter=150,
+                        max_leaf_nodes=15,
+                        min_samples_leaf=10,
+                        l2_regularization=1.0,
+                        random_state=self.seed,
+                    ),
+                ),
+            )
+        )
+        self.pipeline.fit(feature_matrix(rows, self.feature_names), targets)
+        return self
+
+    def inspect_coefficients(self, limit: int = 10) -> tuple[Coefficient, ...]:
+        raise TypeError("boosted models do not have linear coefficients")
+
+
+class BoostedContextActionModel(_BoostedActionModel, ContextActionModel):
+    MODEL_TYPE = "context_hist_gradient_boosting"
+
+
+class BoostedHistoryActionModel(_BoostedActionModel, HistoryAwareActionModel):
+    MODEL_TYPE = "history_hist_gradient_boosting"
+
+
 def legal_action_mask(
-    probabilities: Sequence[float], features: OpponentFeatureVector
+    probabilities: Sequence[float],
+    features: OpponentFeatureVector,
+    *,
+    probability_floor: float = 1e-6,
 ) -> dict[str, float]:
+    if probability_floor < 0:
+        raise ValueError("probability_floor cannot be negative")
     legal = {
         "fold": features.can_fold,
         "check": features.can_check,
@@ -170,7 +218,12 @@ def legal_action_mask(
         "raise": features.can_raise,
     }
     masked = np.asarray(
-        [probabilities[index] if legal[action] else 0.0 for index, action in enumerate(ACTION_CLASSES)],
+        [
+            max(float(probabilities[index]), probability_floor)
+            if legal[action]
+            else 0.0
+            for index, action in enumerate(ACTION_CLASSES)
+        ],
         dtype=float,
     )
     total = float(masked.sum())

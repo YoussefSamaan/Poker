@@ -1,0 +1,33 @@
+{
+  "configuration": {
+    "hands_per_personality": 200,
+    "parameter_shift_hands": 900,
+    "probability_floor": 1e-06,
+    "seeds": [811, 812, 813],
+    "total_physical_hands": 3600
+  },
+  "runtime_seconds": 66.97757458407432,
+  "summary": {
+    "grouped": {
+      "context_boosted": {"mean_accuracy": 0.7611685048164176, "mean_log_loss": 0.677269319712022},
+      "context_logistic": {"mean_accuracy": 0.7612938919653983, "mean_log_loss": 0.7764304425713343},
+      "frequency": {"mean_accuracy": 0.7611943578368261, "mean_log_loss": 0.6880284284427693},
+      "history_boosted": {"mean_accuracy": 0.7466235955346664, "mean_log_loss": 0.9051263844740185},
+      "history_logistic": {"mean_accuracy": 0.7671664055511606, "mean_log_loss": 0.7424991276316327}
+    },
+    "ood": {
+      "context_boosted": {"mean_accuracy": 0.842804219388905, "mean_log_loss": 0.44767861790546193},
+      "context_logistic": {"mean_accuracy": 0.8287986171480086, "mean_log_loss": 0.4737861044646276},
+      "frequency": {"mean_accuracy": 0.8005449306159246, "mean_log_loss": 0.6232943164429146},
+      "history_boosted": {"mean_accuracy": 0.9655423951189671, "mean_log_loss": 0.1576550508614841},
+      "history_logistic": {"mean_accuracy": 0.842804219388905, "mean_log_loss": 0.44412665021614567}
+    },
+    "temporal": {
+      "context_boosted": {"mean_accuracy": 0.7292707842212792, "mean_log_loss": 0.6734940631426921},
+      "context_logistic": {"mean_accuracy": 0.725970454188276, "mean_log_loss": 0.744402866936939},
+      "frequency": {"mean_accuracy": 0.7414466446644665, "mean_log_loss": 0.6928945215541816},
+      "history_boosted": {"mean_accuracy": 0.6567303158887318, "mean_log_loss": 0.8826960749276184},
+      "history_logistic": {"mean_accuracy": 0.7094688040232594, "mean_log_loss": 0.7497395217040609}
+    }
+  }
+}

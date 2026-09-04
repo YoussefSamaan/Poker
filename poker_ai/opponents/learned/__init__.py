@@ -1,6 +1,8 @@
 # ruff: noqa: F401
 
 from .action_model import (
+    BoostedContextActionModel,
+    BoostedHistoryActionModel,
     Coefficient,
     ContextActionModel,
     HistoryAwareActionModel,

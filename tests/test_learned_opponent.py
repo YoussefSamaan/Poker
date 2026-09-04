@@ -12,6 +12,8 @@ from poker_ai.opponents import ObserverContext, OpponentModel
 from poker_ai.opponents.dataset import grouped_train_validation_test_split
 from poker_ai.opponents.learned import (
     ACTION_CLASSES,
+    BoostedContextActionModel,
+    BoostedHistoryActionModel,
     ContextActionModel,
     HandConditionedActionModel,
     HistoryAwareActionModel,
@@ -69,6 +71,10 @@ class LearnedOpponentTests(unittest.TestCase):
             value for value in histories if key(value.public) in test_keys
         )
         cls.history = HistoryAwareActionModel(seed=4).fit(cls.history_train)
+        cls.boosted_context = BoostedContextActionModel(seed=4).fit(cls.split.train)
+        cls.boosted_history = BoostedHistoryActionModel(seed=4).fit(
+            cls.history_train
+        )
         cls.research_train = tuple(
             value
             for value in cls.bundle.research.examples
@@ -123,6 +129,63 @@ class LearnedOpponentTests(unittest.TestCase):
         public_json = json.dumps(asdict(self.split.train[0].features))
         self.assertNotIn("chosen_action_family", public_json)
         self.assertNotIn("true_hole_cards", public_json)
+
+    def test_boosted_models_are_deterministic_legal_and_persistable(self):
+        context_first = self.boosted_context.predict_probabilities(self.split.test)
+        context_second = self.boosted_context.predict_probabilities(self.split.test)
+        history = self.boosted_history.predict_probabilities(self.history_test)
+        self.assertTrue(np.allclose(context_first, context_second, atol=1e-12))
+        self.assertTrue(np.allclose(context_first.sum(axis=1), 1.0))
+        self.assertTrue(np.allclose(history.sum(axis=1), 1.0))
+        for example, row in zip(self.split.test, context_first):
+            legal = (
+                example.features.can_fold,
+                example.features.can_check,
+                example.features.can_call,
+                example.features.can_bet,
+                example.features.can_raise,
+            )
+            self.assertTrue(all(value == 0 for value, allowed in zip(row, legal) if not allowed))
+            self.assertTrue(all(value > 0 for value, allowed in zip(row, legal) if allowed))
+
+        metadata = build_metadata(
+            self.boosted_context,
+            dataset_payload="boosted-test",
+            training_rows=len(self.split.train),
+            training_correlation_groups=len(
+                {value.correlation_group_id for value in self.split.train}
+            ),
+            metrics_summary={},
+            seed=4,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "boosted.joblib"
+            save_learned_artifact(path, self.boosted_context, metadata)
+            restored, _ = load_trusted_local_artifact(path)
+            actual = restored.predict_probabilities(self.split.test)
+            self.assertTrue(np.allclose(context_first, actual, atol=1e-12))
+
+    def test_probability_floor_rejects_invalid_values_and_covers_rare_classes(self):
+        example = self.split.test[0]
+        with self.assertRaises(ValueError):
+            legal_action_mask(
+                np.ones(len(ACTION_CLASSES)),
+                example.features,
+                probability_floor=-1,
+            )
+        distribution = legal_action_mask(
+            np.zeros(len(ACTION_CLASSES)), example.features
+        )
+        legal = {
+            "fold": example.features.can_fold,
+            "check": example.features.can_check,
+            "call": example.features.can_call,
+            "bet": example.features.can_bet,
+            "raise": example.features.can_raise,
+        }
+        self.assertTrue(
+            all(distribution[action] > 0 for action, allowed in legal.items() if allowed)
+        )
 
     def test_history_features_are_causal_and_session_subject_scoped(self):
         histories = causal_history_examples(self.bundle.results)

@@ -15,7 +15,9 @@ CATEGORICAL_FEATURES = (
 )
 
 
-def build_preprocessor(feature_names: Sequence[str]) -> ColumnTransformer:
+def build_preprocessor(
+    feature_names: Sequence[str], *, dense: bool = False
+) -> ColumnTransformer:
     categorical = [
         index
         for index, name in enumerate(feature_names)
@@ -28,7 +30,7 @@ def build_preprocessor(feature_names: Sequence[str]) -> ColumnTransformer:
         (
             (
                 "categorical",
-                OneHotEncoder(handle_unknown="ignore"),
+                OneHotEncoder(handle_unknown="ignore", sparse_output=not dense),
                 categorical,
             ),
             ("numeric", StandardScaler(), numeric),

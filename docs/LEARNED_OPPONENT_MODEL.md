@@ -121,3 +121,43 @@ Do not promote Learned Model v2 as the default. The next experiment should first
 increase grouped sample size and cache/batch the expensive Bayesian likelihood
 path. If nonlinear residual structure remains after that, evaluate sklearn
 `HistGradientBoostingClassifier` before any neural or sequence model.
+
+## Milestone 8 nonlinear strategy gate
+
+Milestone 8 adds deterministic `BoostedContextActionModel` and
+`BoostedHistoryActionModel` candidates based on histogram gradient boosting.
+Both use the same public-only schemas and legal-action masking as the logistic
+models. The preprocessor emits dense features only for these estimators. The CLI
+accepts `boosted-context` and `boosted-history`, and artifacts retain the same
+trusted-local persistence envelope.
+
+All learned models now reserve a probability floor of `1e-6` for each legal
+action before renormalization. This prevents a class absent from one training
+fold from receiving exactly zero probability while keeping illegal actions at
+zero. It is numerical protection, not evidence for that action.
+
+The checked-in `MILESTONE8_RESULTS.json` summarizes three independent seeds,
+3,600 physical in-distribution hands, grouped and temporal holdouts, and 900
+additional parameter-shifted hands. Mean log loss was:
+
+| Strategy | Grouped | Temporal | Parameter shift |
+|---|---:|---:|---:|
+| Legal frequency | 0.688 | 0.693 | 0.623 |
+| Context logistic | 0.776 | 0.744 | 0.474 |
+| History logistic | 0.742 | 0.750 | 0.444 |
+| Context boosted | **0.677** | **0.673** | 0.448 |
+| History boosted | 0.905 | 0.883 | **0.158** |
+
+The context-boosted strategy is the strongest learned candidate on ordinary
+grouped and future-hand evaluation, but its advantage over legal frequency is
+small and one grouped seed was worse. The history-boosted strategy overfits the
+ordinary holdouts despite its strong parameter-shift result, so it is not a safe
+general default. Neither is promoted over the existing Bayesian/archetype model:
+that model scored 0.638 in the earlier smaller exact comparison, and a larger
+same-row Bayesian run remains blocked on likelihood-update throughput.
+
+Decision: expose both nonlinear strategies for experiments, keep the transparent
+Bayesian strategy as the product default, and use context boosting as the next
+learned challenger. The next milestone should accelerate exact Bayesian replay
+and compare these two on identical larger held-out rows before adding a more
+complex model family.

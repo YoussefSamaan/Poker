@@ -9,7 +9,12 @@ from typing import Mapping
 import joblib
 import sklearn
 
-from .action_model import ContextActionModel, HistoryAwareActionModel
+from .action_model import (
+    BoostedContextActionModel,
+    BoostedHistoryActionModel,
+    ContextActionModel,
+    HistoryAwareActionModel,
+)
 from .schema import FEATURE_SCHEMA_VERSION
 
 ARTIFACT_SCHEMA_VERSION = 1
@@ -91,6 +96,8 @@ def load_trusted_local_artifact(
     classes = {
         ContextActionModel.MODEL_TYPE: ContextActionModel,
         HistoryAwareActionModel.MODEL_TYPE: HistoryAwareActionModel,
+        BoostedContextActionModel.MODEL_TYPE: BoostedContextActionModel,
+        BoostedHistoryActionModel.MODEL_TYPE: BoostedHistoryActionModel,
     }
     if metadata.model_type == "hand_conditioned_logistic":
         from .hand_conditioned import HandConditionedActionModel

@@ -8,7 +8,12 @@ import numpy as np
 from ..dataset import PublicDecisionExample, grouped_train_validation_test_split
 from ..model import OpponentHandBelief, OpponentModel
 from ..observation import ObservedDecision, ObserverContext
-from .action_model import ContextActionModel, HistoryAwareActionModel
+from .action_model import (
+    BoostedContextActionModel,
+    BoostedHistoryActionModel,
+    ContextActionModel,
+    HistoryAwareActionModel,
+)
 from .evaluation import (
     ActionMetrics,
     LegalFrequencyBaseline,
@@ -27,10 +32,15 @@ class ActionComparisonReport:
     frequency: ActionMetrics
     context: ActionMetrics
     history: ActionMetrics
+    boosted_context: ActionMetrics
+    boosted_history: ActionMetrics
     bayesian_archetype: ActionMetrics
     context_minus_frequency: MetricDifference
     history_minus_context: MetricDifference
     history_minus_bayesian: MetricDifference
+    boosted_context_minus_frequency: MetricDifference
+    boosted_history_minus_boosted_context: MetricDifference
+    boosted_history_minus_bayesian: MetricDifference
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +49,8 @@ class DomainShiftReport:
     held_out_rows: int
     context: ActionMetrics
     history: ActionMetrics
+    boosted_context: ActionMetrics
+    boosted_history: ActionMetrics
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,10 +86,14 @@ def compare_action_models(
     history_by_key = {_key(value.public): value for value in history_held}
     ordered_history = tuple(history_by_key[_key(value)] for value in held)
     history_model = HistoryAwareActionModel(seed=seed).fit(history_training)
+    boosted_context_model = BoostedContextActionModel(seed=seed).fit(split.train)
+    boosted_history_model = BoostedHistoryActionModel(seed=seed).fit(history_training)
 
     frequency = frequency_model.predict_probabilities(held)
     context = context_model.predict_probabilities(held)
     history = history_model.predict_probabilities(ordered_history)
+    boosted_context = boosted_context_model.predict_probabilities(held)
+    boosted_history = boosted_history_model.predict_probabilities(ordered_history)
     bayesian = bayesian_archetype_probabilities(
         bundle, split.train, held
     )
@@ -86,6 +102,8 @@ def compare_action_models(
         evaluate_action_predictions(held, frequency),
         evaluate_action_predictions(held, context),
         evaluate_action_predictions(held, history),
+        evaluate_action_predictions(held, boosted_context),
+        evaluate_action_predictions(held, boosted_history),
         evaluate_action_predictions(held, bayesian),
         grouped_log_loss_difference_bootstrap(
             held, context, frequency, samples=bootstrap_samples, seed=seed
@@ -95,6 +113,19 @@ def compare_action_models(
         ),
         grouped_log_loss_difference_bootstrap(
             held, history, bayesian, samples=bootstrap_samples, seed=seed + 2
+        ),
+        grouped_log_loss_difference_bootstrap(
+            held, boosted_context, frequency, samples=bootstrap_samples, seed=seed + 3
+        ),
+        grouped_log_loss_difference_bootstrap(
+            held,
+            boosted_history,
+            boosted_context,
+            samples=bootstrap_samples,
+            seed=seed + 4,
+        ),
+        grouped_log_loss_difference_bootstrap(
+            held, boosted_history, bayesian, samples=bootstrap_samples, seed=seed + 5
         ),
     )
 
@@ -119,6 +150,10 @@ def evaluate_domain_shift(
         if value.public.public_subject_id == "public_player_1"
     )
     history_model = HistoryAwareActionModel(seed=seed).fit(training_history)
+    boosted_context_model = BoostedContextActionModel(seed=seed).fit(
+        training_bundle.public_examples
+    )
+    boosted_history_model = BoostedHistoryActionModel(seed=seed).fit(training_history)
     held = held_out_bundle.public_examples
     return DomainShiftReport(
         len(training_bundle.public_examples),
@@ -127,6 +162,13 @@ def evaluate_domain_shift(
         evaluate_action_predictions(
             tuple(value.public for value in held_history),
             history_model.predict_probabilities(held_history),
+        ),
+        evaluate_action_predictions(
+            held, boosted_context_model.predict_probabilities(held)
+        ),
+        evaluate_action_predictions(
+            tuple(value.public for value in held_history),
+            boosted_history_model.predict_probabilities(held_history),
         ),
     )
 
